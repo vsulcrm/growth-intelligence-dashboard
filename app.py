@@ -52,23 +52,47 @@ def generate_data():
 
 df_users, df_events = generate_data()
 
-# --- SIDEBAR CHECKBOX FILTER ---
+# --- SIDEBAR CHECKBOX FILTER (FIXED LOGIC) ---
 st.sidebar.write("---")
 st.sidebar.subheader("Filter Acquisition Cohorts")
 df_users['cohort'] = df_users['acq_date'].dt.to_period('M').dt.to_timestamp()
 all_months = sorted(df_users['cohort'].unique())
 
-select_all = st.sidebar.checkbox("Select All Months", value=True)
-selected_months = []
+# Initialisierung Session State
+if 'selected_months' not in st.session_state:
+    st.session_state.selected_months = [m for m in all_months]
+
+# Callback für Select All
+def on_select_all_change():
+    if st.session_state.select_all_cb:
+        st.session_state.selected_months = [m for m in all_months]
+    else:
+        st.session_state.selected_months = []
+
+st.sidebar.checkbox("Select All Months", 
+                    value=len(st.session_state.selected_months) == len(all_months), 
+                    key="select_all_cb", 
+                    on_change=on_select_all_change)
+
+# Einzelne Monate
+current_selected = []
 for month in all_months:
     label = month.strftime('%B %Y')
-    if st.sidebar.checkbox(label, value=select_all, key=f"cb_{label}"):
-        selected_months.append(month)
+    is_sel = month in st.session_state.selected_months
+    if st.sidebar.checkbox(label, value=is_sel, key=f"month_{label}"):
+        current_selected.append(month)
+
+st.session_state.selected_months = current_selected
 
 # --- FILTERING LOGIC ---
-# We only keep users who were acquired in the selected months
-filtered_users = df_users[df_users['cohort'].isin(selected_months)].copy()
-# We only keep events belonging to these specific users
+filtered_users = df_users[df_users['cohort'].isin(st.session_state.selected_months)].copy()
+
+# Fix für den Januar-Fehler: Max-Datum berechnen
+if not st.session_state.selected_months:
+    max_date_limit = datetime(2026, 1, 8)
+else:
+    max_date_limit = max(st.session_state.selected_months) + pd.offsets.MonthEnd(1)
+
 df_filtered_events = df_events[df_events['user_id'].isin(filtered_users['user_id'])]
 
 st.title("🚀 Product Growth Intelligence")
@@ -76,13 +100,12 @@ st.markdown(f"**Current Status:** {len(filtered_users)} Users in Focus")
 
 tab1, tab2 = st.tabs(["📉 Usage Retention Matrix", "👤 Behavioral RFM Deep-Dive"])
 
-# --- TAB 1: RETENTION MATRIX (STRICT FILTERING) ---
+# --- TAB 1: RETENTION MATRIX ---
 with tab1:
     st.subheader("Monthly Retention Matrix (%)")
     if not filtered_users.empty and not df_filtered_events.empty:
-        cohort_query = """
+        cohort_query = f"""
             WITH user_cohorts AS (
-                -- Use the pre-filtered user list to define cohorts
                 SELECT user_id, acq_date as cohort_date, DATE_TRUNC('month', acq_date) AS cohort_month
                 FROM filtered_users
             ),
@@ -93,6 +116,7 @@ with tab1:
                 FROM df_filtered_events e 
                 JOIN user_cohorts uc ON e.user_id = uc.user_id
                 WHERE e.type = 'visit'
+                AND e.event_date <= '{max_date_limit.strftime('%Y-%m-%d')}'
             )
             SELECT 
                 strftime(cohort_month, '%Y-%m') as sort_key,
@@ -120,12 +144,12 @@ with tab1:
     else:
         st.warning("Please select at least one cohort in the sidebar.")
 
-# --- TAB 2: RFM DEEP-DIVE (STRICT COMPARISON) ---
+# --- TAB 2: RFM DEEP-DIVE ---
 with tab2:
     st.subheader("Engagement vs. Monetary Value")
     
     if not filtered_users.empty:
-        rfm = duckdb.query("""
+        rfm = duckdb.query(f"""
             SELECT 
                 u.user_id, 
                 strftime(DATE_TRUNC('month', u.acq_date), '%b %Y') as joined_month,
@@ -135,47 +159,43 @@ with tab2:
                 COALESCE(SUM(e.revenue), 0) as m_revenue
             FROM filtered_users u 
             LEFT JOIN df_filtered_events e ON u.user_id = e.user_id 
+            WHERE e.event_date <= '{max_date_limit.strftime('%Y-%m-%d')}' OR e.event_date IS NULL
             GROUP BY 1, 2, 3
         """).df()
 
         def segment_behavior(row):
             r = 'A. < 1h' if row['r_hours'] < 1 else 'B. 1-24h' if row['r_hours'] <= 24 else 'C. > 24h'
-            f = 'A. Power User' if row['f_visits'] > 25 else 'B. Regular' if row['f_visits'] > 8 else 'C. Occasional'
-            m = 'D. Not Converted' if row['m_revenue'] == 0 else 'C. Starter' if row['m_revenue'] <= 300 else 'B. Core' if row['m_revenue'] <= 1000 else 'A. High Value'
+            f = 'A. Power User (>25)' if row['f_visits'] > 25 else 'B. Regular (8-25)' if row['f_visits'] > 8 else 'C. Occasional'
+            m = 'D. €0' if row['m_revenue'] == 0 else 'C. Starter (<€300)' if row['m_revenue'] <= 300 else 'B. Core (<€1k)' if row['m_revenue'] <= 1000 else 'A. High Value'
             return pd.Series([r, f, m])
 
         rfm[['Recency', 'Frequency', 'Monetary']] = rfm.apply(segment_behavior, axis=1)
 
-        # A/B COHORT COMPARISON
-        st.write("---")
-        st.write("### Cohort A/B Comparison")
-        
-        # We derive the options strictly from the filtered RFM table
-        available_comp = sorted(rfm['joined_month'].unique(), 
-                                key=lambda x: rfm[rfm['joined_month'] == x]['sort_key'].iloc[0])
+        # A/B Vergleich
+        st.write("### Cohort Revenue Comparison")
+        available_comp = sorted(rfm['joined_month'].unique())
         
         if len(available_comp) >= 2:
             c1, c2 = st.columns(2)
-            m_a = c1.selectbox("Cohort A:", options=available_comp, index=0, key="sel_a")
-            m_b = c2.selectbox("Cohort B:", options=available_comp, index=1, key="sel_b")
+            m_a = c1.selectbox("Cohort A:", options=available_comp, index=0)
+            m_b = c2.selectbox("Cohort B:", options=available_comp, index=1)
             
             comp_df = rfm[rfm['joined_month'].isin([m_a, m_b])]
-            fig_comp = px.histogram(comp_df, x="Monetary", color="joined_month", barmode="group", 
-                                    template=chart_template, color_discrete_sequence=['#00CC96', '#636EFA'])
+            fig_comp = px.box(comp_df, x="joined_month", y="m_revenue", color="joined_month", 
+                             points="all", title="Monetary Distribution (€)", template=chart_template)
             st.plotly_chart(fig_comp, use_container_width=True)
-        else:
-            st.info("Select at least 2 months in the sidebar to enable A/B comparison.")
 
-        # DISTRIBUTION & TABLE
+        # DISTRIBUTION CHARTS
         st.write("---")
         c1, c2, c3 = st.columns(3)
-        c1.plotly_chart(px.bar(rfm['Recency'].value_counts().sort_index(), template=chart_template, title="Recency (Last Visit)"), use_container_width=True)
-        c2.plotly_chart(px.bar(rfm['Frequency'].value_counts().sort_index(), template=chart_template, title="Frequency (Usage)"), use_container_width=True)
-        c3.plotly_chart(px.bar(rfm['Monetary'].value_counts().sort_index(), template=chart_template, title="Monetary (Revenue)"), use_container_width=True)
+        c1.plotly_chart(px.bar(rfm['Recency'].value_counts().sort_index(), title="Users by Recency"), use_container_width=True)
+        c2.plotly_chart(px.bar(rfm['Frequency'].value_counts().sort_index(), title="Users by Usage Frequency"), use_container_width=True)
+        
+        # Monetary Chart Fix: Summe statt Count
+        m_dist = rfm.groupby('Monetary')['m_revenue'].sum().reset_index()
+        c3.plotly_chart(px.bar(m_dist, x='Monetary', y='m_revenue', title="Total Revenue by Segment (€)", color='Monetary'), use_container_width=True)
 
         st.subheader("Detailed Performance Data")
         st.dataframe(rfm[['user_id', 'joined_month', 'Recency', 'Frequency', 'Monetary', 'm_revenue']].sort_values('m_revenue', ascending=False), use_container_width=True)
-    else:
-        st.warning("No data available for RFM.")
 
 st.caption("Developed by Volker Schulz | Growth Intelligence Portfolio | 2026")
