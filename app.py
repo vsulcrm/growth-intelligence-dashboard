@@ -9,8 +9,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="Growth Intelligence", layout="wide")
 
 st.sidebar.title("App Settings")
-is_dark = st.sidebar.toggle("Dark Mode Optimized", value=True)
-chart_template = "plotly_dark" if is_dark else "plotly_white"
+chart_template = "plotly_dark"
 
 # --- 2. DATA ENGINE (Realistische Simulation) ---
 @st.cache_data
@@ -23,15 +22,25 @@ def generate_data():
         acq = datetime(2025, 1, 1) + timedelta(days=np.random.randint(0, 365))
         users.append([uid, acq])
         
-        # Churn-Logik für Retention
-        retention_prob = 0.82  
-        for m in range(13):
-            if np.random.random() < (retention_prob ** (m + 1)):
-                v_date = acq + timedelta(days=m*30 + np.random.randint(0, 28))
-                if v_date < now:
-                    events.append([uid, v_date, "visit", 0])
-                    if np.random.random() > 0.75:
-                        events.append([uid, v_date, "purchase", np.random.uniform(20, 500)])
+        # Churn-Logik für Realistic SaaS Retention (Shifted Hyperbolic / Power Law)
+        # 1 / (1 + alpha * t) mimics "early drop, then flatten"
+        # t is month index (0 to 12)
+        dates = pd.date_range(acq, periods=13, freq='30D')
+        for m, v_date in enumerate(dates):
+            # Retention Curve: High drop month 1-3, stabilizes
+            # Prob(alive) at month m. If alive, generate visit.
+            
+            # Simple approach: P(Active at m) = 1.0 / (1.0 + 0.5 * m)
+            # m=0: 100%, m=1: 66%, m=2: 50%, m=12: ~14%
+            # Modified to be a bit stickier: 1.0 / (1.0 + 0.2 * m) -> m12=29%
+            prob_active = 1.0 / (1.0 + 0.25 * m)
+            
+            if np.random.random() < prob_active:
+                v_date_jitter = v_date + timedelta(days=np.random.randint(0, 10))
+                if v_date_jitter < now:
+                    events.append([uid, v_date_jitter, "visit", 0])
+                    if np.random.random() > 0.8: # Purchase prob if active
+                        events.append([uid, v_date_jitter, "purchase", np.random.uniform(20, 500)])
     
     return pd.DataFrame(users, columns=["user_id", "acq_date"]), pd.DataFrame(events, columns=["user_id", "event_date", "type", "revenue"])
 
@@ -52,21 +61,30 @@ if 'selected_months' not in st.session_state:
     st.session_state.selected_months = [m for m in all_months]
 
 def toggle_all():
-    if st.session_state.master_cb:
+    new_state = st.session_state.master_cb
+    for m in all_months:
+        m_str = m.strftime('%Y-%m')
+        st.session_state[f"cb_{m_str}"] = new_state
+    
+    if new_state:
         st.session_state.selected_months = [m for m in all_months]
     else:
         st.session_state.selected_months = []
 
 # Master Checkbox (Select/Deselect All)
-st.sidebar.checkbox("Alle Monate an/abwählen", value=len(st.session_state.selected_months) == len(all_months), 
+st.sidebar.checkbox("Alle Monate an/abwählen", value=True, 
                     key="master_cb", on_change=toggle_all)
 
 current_selection = []
 for m in all_months:
     m_str = m.strftime('%Y-%m')
     m_label = m.strftime('%B %Y')
-    is_on = m in st.session_state.selected_months
-    if st.sidebar.checkbox(m_label, value=is_on, key=f"cb_{m_str}"):
+    
+    # Init default state
+    if f"cb_{m_str}" not in st.session_state:
+        st.session_state[f"cb_{m_str}"] = True
+        
+    if st.sidebar.checkbox(m_label, key=f"cb_{m_str}"):
         current_selection.append(m)
 st.session_state.selected_months = current_selection
 
@@ -151,26 +169,47 @@ else:
 
     rfm_scored = calculate_rfm_scores(rfm_df)
     
-    opts = rfm_scored.sort_values('sort_key')['joined_month'].unique()
-    colA, colB = st.columns(2)
-    mA = colA.selectbox("Basis-Kohorte A:", opts, index=0)
-    mB = colB.selectbox("Vergleichs-Kohorte B:", opts, index=min(1, len(opts)-1))
-    
     # --- RFM HEATMAP (ZUSATZ-WUNSCH) ---
     st.subheader("RFM Group Heatmap: Frequency vs Recency (Color = Avg Revenue)")
-    # Aggregation für Heatmap
-    heatmap_data = rfm_scored[rfm_scored['joined_month'].isin([mA, mB])].groupby(['F', 'R'])['m_raw'].mean().reset_index()
-    heatmap_pivot = heatmap_data.pivot(index='F', columns='R', values='m_raw')
     
-    fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='.0f', color_continuous_scale='Viridis',
-                             labels=dict(x="Recency Score (3=Frisch)", y="Frequency Score (3=Oft)", color="Ø Umsatz €"),
-                             template=chart_template)
-    st.plotly_chart(fig_rfm_heat, use_container_width=True)
+    # Allow specific cohort selection based on current global filter
+    available = rfm_scored.sort_values('sort_key')['joined_month'].unique()
+    # Which ones are currently "active" in the main filter?
+    preselected = [c for c in available if pd.to_datetime(c).strftime('%Y-%m') in [d.strftime('%Y-%m') for d in current_selection]]
+    
+    selected_heatmap_cohorts = st.multiselect("Kohorten für Heatmap auswählen (Teilmenge der globalen Auswahl):", 
+                                              options=available, 
+                                              default=preselected)
+    
+    if not selected_heatmap_cohorts:
+        st.warning("Keine Kohorten für Heatmap ausgewählt.")
+    else:
+        # Aggregation für Heatmap
+        heatmap_data = rfm_scored[rfm_scored['joined_month'].isin(selected_heatmap_cohorts)].groupby(['F', 'R'])['m_raw'].mean().reset_index()
+        heatmap_pivot = heatmap_data.pivot(index='F', columns='R', values='m_raw')
+        
+        # Sort index/columns to ensure order 3-2-1 if necessary, though 1-2-3 is sorted string
+        # Recency: 3=Best/Newest, 1=Oldest.
+        # Frequency: 3=High, 1=Low.
+        # We want X=Recency, Y=Frequency.
+        # Order should be R: 3, 2, 1 (New -> Old) ? Or 1, 2, 3? 
+        # Usually R score 3 is "Recent" (Good).
+        
+        fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='.0f', color_continuous_scale='Viridis',
+                                 labels=dict(x="Recency Score (3=Frisch)", y="Frequency Score (3=Oft)", color="Ø Umsatz €"),
+                                 template=chart_template)
+        st.plotly_chart(fig_rfm_heat, use_container_width=True)
 
     # Gruppen-Vergleich (Bar)
     st.subheader("Vergleich der Top RFM-Kombinationen")
-    comp_df = rfm_scored[rfm_scored['joined_month'].isin([mA, mB])]
+    
+    comp_df = rfm_scored[rfm_scored['joined_month'].isin(selected_heatmap_cohorts)]
     group_stats = comp_df.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
+    
+    # Sortierung: Immer absteigend nach Anzahl (Gesamt oder pro Gruppe)
+    # Hier simple sort by count descending across all rows
+    group_stats = group_stats.sort_values(by="count", ascending=False)
+    
     fig_groups = px.bar(group_stats, x="RFM_Group", y="count", color="joined_month", barmode="group",
                         template=chart_template)
     st.plotly_chart(fig_groups, use_container_width=True)
