@@ -10,10 +10,7 @@ st.set_page_config(page_title="Growth Intelligence", layout="wide")
 
 st.sidebar.title("App Settings")
 is_dark = st.sidebar.toggle("Dark Mode Optimized", value=True)
-
 chart_template = "plotly_dark" if is_dark else "plotly_white"
-if is_dark:
-    st.markdown("<style>.stApp { background-color: #0e1117; color: #ffffff; }</style>", unsafe_allow_html=True)
 
 # --- 2. DATA ENGINE ---
 @st.cache_data
@@ -21,72 +18,66 @@ def generate_data():
     np.random.seed(42)
     users, events = [], []
     now = datetime(2026, 1, 8, 12, 0)
-    for i in range(1, 1001):
+    for i in range(1, 1200):
         uid = f"User_{i:04d}"
         acq = datetime(2025, 1, 1) + timedelta(days=np.random.randint(0, 360))
         users.append([uid, acq])
-        # Engagement (Visits)
-        for _ in range(np.random.randint(1, 40)):
-            v_date = acq + timedelta(days=np.random.randint(0, 360))
+        for _ in range(np.random.randint(1, 50)):
+            v_date = acq + timedelta(days=np.random.randint(0, 300))
             if v_date < now: events.append([uid, v_date, "visit", 0])
-        # Revenue (Purchases)
-        if np.random.random() > 0.5:
-            for _ in range(np.random.randint(1, 6)):
-                p_date = acq + timedelta(days=np.random.randint(0, 360))
-                if p_date < now: events.append([uid, p_date, "purchase", np.random.uniform(10, 500)])
+        if np.random.random() > 0.4:
+            for _ in range(np.random.randint(1, 10)):
+                p_date = acq + timedelta(days=np.random.randint(0, 300))
+                if p_date < now: events.append([uid, p_date, "purchase", np.random.uniform(5, 400)])
     return pd.DataFrame(users, columns=["user_id", "acq_date"]), pd.DataFrame(events, columns=["user_id", "event_date", "type", "revenue"])
 
 df_users, df_events = generate_data()
 df_users['cohort'] = df_users['acq_date'].dt.to_period('M').dt.to_timestamp()
 all_months = sorted(df_users['cohort'].unique())
 
-# --- 3. HEADER & SIDEBAR (STRICT SELECTION LOGIC) ---
+# --- 3. HEADER & SIDEBAR LOGIK (Select All / Deselect All) ---
 st.title("🚀 Product Growth Intelligence")
 
 # View Selector
-view_mode = st.radio("Ansicht:", ["📉 Retention Analysis", "👤 RFM Model Comparison"], horizontal=True)
+view_mode = st.radio("Modus wählen:", ["📉 Retention Analysis", "👤 RFM Score Comparison"], horizontal=True)
 
-# SIDEBAR FILTER LOGIC
-st.sidebar.subheader("Kohorten-Filter")
+# Sidebar: Filter mit Session State Synchronisation
+st.sidebar.subheader("Kohorten-Steuerung")
 
-# State-Synchronisation für Checkboxen
 if 'selected_months' not in st.session_state:
     st.session_state.selected_months = [m for m in all_months]
 
-def sync_checkboxes():
-    if st.session_state.master_cb:
+# Logik für Alles an / Alles aus
+def toggle_all():
+    if st.session_state.master_toggle:
         st.session_state.selected_months = [m for m in all_months]
     else:
         st.session_state.selected_months = []
 
-# Master Toggle
-st.sidebar.checkbox("Select All Months", value=len(st.session_state.selected_months) == len(all_months), 
-                    key="master_cb", on_change=sync_checkboxes)
+st.sidebar.checkbox("Select All / Deselect All", value=len(st.session_state.selected_months) == len(all_months), 
+                    key="master_toggle", on_change=toggle_all)
 
-# Einzelne Checkboxen
 final_selected = []
 for m in all_months:
     m_str = m.strftime('%B %Y')
-    # Wir setzen den Wert direkt aus dem session_state
     is_on = m in st.session_state.selected_months
+    # Jede Checkbox wird an den State gebunden
     if st.sidebar.checkbox(m_str, value=is_on, key=f"cb_{m_str}"):
         final_selected.append(m)
 st.session_state.selected_months = final_selected
 
 if not final_selected:
-    st.warning("Bitte wähle mindestens einen Monat aus.")
+    st.warning("Bitte Kohorten in der Sidebar auswählen.")
     st.stop()
 
-# Filterung der Daten
 filtered_users = df_users[df_users['cohort'].isin(final_selected)]
 df_filtered_events = df_events[df_events['user_id'].isin(filtered_users['user_id'])]
 
 st.markdown("---")
 
-# --- 4. BODY BEREICH ---
-
+# --- 4. BODY: RETENTION ---
 if view_mode == "📉 Retention Analysis":
-    st.header("Monthly Retention (Cohort View)")
+    st.header("Monthly Retention (Standard 12-Month View)")
     
     retention_query = """
         WITH user_cohorts AS (
@@ -100,84 +91,84 @@ if view_mode == "📉 Retention Analysis":
             JOIN user_cohorts uc ON e.user_id = uc.user_id
             WHERE e.type = 'visit'
         )
-        SELECT 
-            strftime(cohort_month, '%Y-%m') as sort_key,
-            strftime(cohort_month, '%b %Y') as cohort_name, 
-            month_number, 
-            COUNT(DISTINCT user_id) AS active_users
-        FROM activity
-        WHERE month_number >= 0 AND month_number <= 12
-        GROUP BY 1, 2, 3 ORDER BY 1, 3
+        SELECT strftime(cohort_month, '%b %Y') as cohort_name, month_number, COUNT(DISTINCT user_id) AS active_users
+        FROM activity WHERE month_number >= 0 AND month_number <= 12 GROUP BY 1, 2 ORDER BY 2
     """
     cohort_data = duckdb.query(retention_query).df()
     
     if not cohort_data.empty:
-        pivot = cohort_data.pivot(index='cohort_name', columns='month_number', values='active_users')
-        pivot.index = pd.Categorical(pivot.index, categories=cohort_data.sort_values('sort_key')['cohort_name'].unique(), ordered=True)
-        pivot = pivot.sort_index().fillna(0)
+        pivot = cohort_data.pivot(index='cohort_name', columns='month_number', values='active_users').fillna(0)
+        retention_matrix = (pivot.divide(pivot.iloc[:, 0], axis=0) * 100).clip(upper=100.0)
         
-        # Normierung: Monat 0 ist 100%, Folgemonate können nicht > 100% sein
-        retention_matrix = pivot.divide(pivot.iloc[:, 0], axis=0) * 100
-        retention_matrix = retention_matrix.clip(upper=100.0) # Cap bei 100%
-        
-        fig_heat = px.imshow(retention_matrix, text_auto='.1f', color_continuous_scale='RdYlGn',
-                             labels=dict(x="Monate seit Start", y="Kohorte", color="Retention %"),
-                             template=chart_template, aspect="auto")
+        fig_heat = px.imshow(retention_matrix, text_auto='.1f', color_continuous_scale='RdYlGn', template=chart_template, aspect="auto")
         st.plotly_chart(fig_heat, use_container_width=True)
 
-        # --- KPI SECTION (AC: M1, M3, M6, M12) ---
-        st.subheader("Retention Milestones (Selected Cohort)")
-        selected_cohort_kpi = st.selectbox("Wähle Kohorte für KPI Check:", retention_matrix.index)
-        
-        kpi_row = retention_matrix.loc[selected_cohort_kpi]
-        cols = st.columns(4)
+        # Milestone KPIs
+        st.subheader("Milestone Metrics (M1, M3, M6, M12)")
+        sel_c = st.selectbox("Kohorte wählen:", retention_matrix.index)
+        kpi = retention_matrix.loc[sel_c]
+        c1, c2, c3, c4 = st.columns(4)
         for i, m in enumerate([1, 3, 6, 12]):
-            val = kpi_row[m] if m in kpi_row else 0
-            cols[i].metric(f"Retention Month {m}", f"{val:.1f}%")
+            val = kpi[m] if m in kpi else 0
+            [c1, c2, c3, c4][i].metric(f"Month {m}", f"{val:.1f}%")
 
-else: # RFM Model Comparison
-    st.header("Behavioral RFM Model Comparison")
+# --- 4. BODY: RFM MODEL ---
+else: 
+    st.header("RFM Score Comparison (1-3 Scoring)")
     
+    # 1. RFM Rohdaten berechnen
     rfm_raw = duckdb.query("""
         SELECT 
             u.user_id, 
             strftime(DATE_TRUNC('month', u.acq_date), '%b %Y') as joined_month,
-            date_diff('day', MAX(CASE WHEN e.type = 'visit' THEN e.event_date END), timestamp '2026-01-08 12:00:00') as r_days,
-            COUNT(CASE WHEN e.type = 'visit' THEN 1 END) as f_visits,
-            COALESCE(SUM(e.revenue), 0) as m_revenue
+            date_diff('day', MAX(CASE WHEN e.type = 'visit' THEN e.event_date END), timestamp '2026-01-08 12:00:00') as r_raw,
+            COUNT(CASE WHEN e.type = 'visit' THEN 1 END) as f_raw,
+            COALESCE(SUM(e.revenue), 0) as m_raw
         FROM filtered_users u 
         LEFT JOIN df_filtered_events e ON u.user_id = e.user_id 
         GROUP BY 1, 2
     """).df()
 
+    # 2. Scoring Logik (1-3)
+    # R: Niedrige Tage = Score 3, Hohe Tage = Score 1
+    rfm_raw['R'] = pd.qcut(rfm_raw['r_raw'], 3, labels=["3", "2", "1"]).astype(str)
+    # F: Hohe Anzahl = Score 3
+    rfm_raw['F'] = pd.qcut(rfm_raw['f_raw'].rank(method='first'), 3, labels=["1", "2", "3"]).astype(str)
+    # M: Hoher Umsatz = Score 3
+    rfm_raw['M'] = pd.qcut(rfm_raw['m_raw'].rank(method='first'), 3, labels=["1", "2", "3"]).astype(str)
+    
+    # Gruppen kombinieren (z.B. "3-3-3")
+    rfm_raw['RFM_Group'] = rfm_raw['R'] + "-" + rfm_raw['F'] + "-" + rfm_raw['M']
+
+    # 3. Vergleichs-UI
     if len(final_selected) >= 2:
-        c1, c2 = st.columns(2)
         opts = sorted(rfm_raw['joined_month'].unique())
-        mA = c1.selectbox("Kohorte A (Modell):", opts, index=0)
-        mB = c2.selectbox("Kohorte B (Modell):", opts, index=1)
+        colA, colB = st.columns(2)
+        mA = colA.selectbox("Vergleichsmonat A:", opts, index=0)
+        mB = colB.selectbox("Vergleichsmonat B:", opts, index=1)
         
-        # Scatter Model Comparison
         comp_df = rfm_raw[rfm_raw['joined_month'].isin([mA, mB])]
         
-        st.subheader("RFM Bubble Model: Recency vs Frequency (Size = Monetary)")
-        fig_model = px.scatter(comp_df, x="r_days", y="f_visits", size="m_revenue", color="joined_month",
-                               hover_name="user_id", log_x=False, size_max=40,
-                               labels={"r_days": "Recency (Tage seit Besuch)", "f_visits": "Frequency (Anzahl Besuche)"},
-                               template=chart_template, color_discrete_sequence=['#00CC96', '#636EFA'])
-        # Optimierung: X-Achse invertieren (kleine Werte = besser)
-        fig_model.update_xaxes(autorange="reversed")
-        st.plotly_chart(fig_model, use_container_width=True)
+        # Aggregation für den Gruppenvergleich
+        group_counts = comp_df.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
+        
+        st.subheader("Vergleich der RFM-Gruppen (Verteilung)")
+        fig_groups = px.bar(group_counts, x="RFM_Group", y="count", color="joined_month", 
+                            barmode="group", title="Häufigkeit der RFM-Kombinationen (z.B. 3-3-3 = Champions)",
+                            template=chart_template)
+        st.plotly_chart(fig_groups, use_container_width=True)
 
-        # Bar Charts für harte Fakten
-        st.markdown("---")
-        stats = comp_df.groupby('joined_month').agg({'m_revenue': 'mean', 'f_visits': 'mean', 'r_days': 'mean'}).reset_index()
-        b1, b2, b3 = st.columns(3)
-        b1.plotly_chart(px.bar(stats, x='joined_month', y='m_revenue', color='joined_month', title="Avg Monetary Value (€)", template=chart_template), use_container_width=True)
-        b2.plotly_chart(px.bar(stats, x='joined_month', y='f_visits', color='joined_month', title="Avg Frequency (Usage)", template=chart_template), use_container_width=True)
-        b3.plotly_chart(px.bar(stats, x='joined_month', y='r_days', color='joined_month', title="Avg Recency (Days)", template=chart_template), use_container_width=True)
+        # Durchschnittswerte pro Score-Klasse
+        st.subheader("Analyse der R-F-M Einzelscores")
+        m_cols = st.columns(3)
+        for i, score_type in enumerate(['R', 'F', 'M']):
+            sub_stats = comp_df.groupby(['joined_month', score_type])['m_raw'].mean().reset_index()
+            fig = px.bar(sub_stats, x=score_type, y="m_raw", color="joined_month", barmode="group",
+                         title=f"Ø Umsatz nach {score_type}-Score", template=chart_template)
+            m_cols[i].plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Bitte wähle zwei Monate für das Vergleichsmodell aus.")
+        st.info("Bitte zwei Monate für den RFM-Vergleich wählen.")
 
 # --- 5. FOOTER ---
 st.markdown("---")
-st.caption("Growth Intelligence Dashboard | © 2026 Volker Schulz | Optimized RFM & Retention Engine")
+st.caption("Growth Intelligence Dashboard | AC Compliant RFM Scoring (1-3) | Volker Schulz")
