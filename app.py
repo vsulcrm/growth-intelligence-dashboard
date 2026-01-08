@@ -3,174 +3,118 @@ import pandas as pd
 import duckdb
 import plotly.express as px
 import numpy as np
+from datetime import datetime, timedelta
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="Growth Intelligence", layout="wide")
-
-st.title("🚀 Strategic Growth & RFM Dashboard")
+st.title("📊 Engagement-Driven RFM Dashboard")
 st.markdown("---")
 
-# 2. SYNTHETIC DATA ENGINE
+# 2. DATA ENGINE (Simuliert Besuche vs. Käufe)
 @st.cache_data
 def generate_data():
     np.random.seed(42)
-    data = []
-    for i in range(1, 601):
-        start_date = pd.to_datetime("2024-01-01") + pd.to_timedelta(np.random.randint(0, 365), unit="d")
-        num_purchases = np.random.randint(1, 15)
-        for _ in range(num_purchases):
-            purchase_date = start_date + pd.to_timedelta(np.random.randint(0, 200), unit="d")
-            data.append([f"User_{i:03d}", purchase_date, np.random.uniform(25, 300)])
-    return pd.DataFrame(data, columns=["user_id", "purchase_date", "revenue"])
-
-df = generate_data()
-
-# TABS INITIALISIEREN
-tab1, tab2 = st.tabs(["📉 Kohorten-Analyse (Retention)", "👤 RFM Segmentierung & Vergleich"])
-
-# --- TAB 1: KOHORTEN-ANALYSE ---
-with tab1:
-    st.header("Monthly Retention Analysis")
+    users = []
+    events = [] # Besuche und Käufe
+    now = datetime(2025, 1, 8, 12, 0)
     
-    query_cohort = """
-        WITH user_cohorts AS (
-            SELECT user_id, MIN(DATE_TRUNC('month', purchase_date)) AS cohort_month
-            FROM df GROUP BY 1
-        ),
-        order_activities AS (
-            SELECT t.user_id, uc.cohort_month,
-                   (EXTRACT(year FROM t.purchase_date) - EXTRACT(year FROM uc.cohort_month)) * 12 +
-                   (EXTRACT(month FROM t.purchase_date) - EXTRACT(month FROM uc.cohort_month)) AS month_number
-            FROM df t JOIN user_cohorts uc ON t.user_id = uc.user_id
-        )
-        SELECT 
-            strftime(cohort_month, '%b %Y') as cohort_name,
-            cohort_month, 
-            month_number, 
-            COUNT(DISTINCT user_id) AS active_users
-        FROM order_activities
-        GROUP BY 1, 2, 3 ORDER BY 2, 3
-    """
-    cohort_raw = duckdb.query(query_cohort).df()
-
-    # SIDEBAR FILTER
-    all_months = sorted(cohort_raw['cohort_month'].unique())
-    selected_months_raw = st.sidebar.multiselect(
-        "Kohorten filtern:", 
-        options=all_months, 
-        default=all_months,
-        format_func=lambda x: x.strftime('%B %Y')
-    )
-
-    filtered_cohorts = cohort_raw[cohort_raw['cohort_month'].isin(selected_months_raw)]
-
-    if not filtered_cohorts.empty:
-        pivot_df = filtered_cohorts.pivot(index='cohort_name', columns='month_number', values='active_users')
-        pivot_df = pivot_df.reindex(filtered_cohorts['cohort_name'].unique()) 
-        retention_matrix = pivot_df.divide(pivot_df.iloc[:, 0], axis=0) * 100
-
-        # ADAPTIVE HEATMAP
-        fig = px.imshow(retention_matrix,
-                        labels=dict(x="Monate nach Erstkauf", y="Kohorte", color="Retention %"),
-                        color_continuous_scale='RdYlGn', text_auto='.1f', aspect="auto")
+    for i in range(1, 1001): # 1000 User
+        user_id = f"User_{i:04d}"
+        acq_date = datetime(2024, 1, 1) + timedelta(days=np.random.randint(0, 365))
+        users.append([user_id, acq_date])
         
-        fig.update_layout(xaxis=dict(tickmode='linear', dtick=1, side='top'))
-        # theme="streamlit" macht die Grafik adaptiv für Light/Dark
-        st.plotly_chart(fig, use_container_width=True, theme="streamlit")
-    else:
-        st.warning("Bitte Kohorten in der Sidebar wählen.")
+        # Besuche simulieren (Engagement - Frequency & Recency)
+        num_visits = np.random.randint(1, 50)
+        for _ in range(num_visits):
+            v_date = acq_date + timedelta(days=np.random.randint(0, 180), hours=np.random.randint(0, 24))
+            if v_date > now: v_date = now - timedelta(minutes=np.random.randint(1, 60))
+            events.append([user_id, v_date, "visit", 0])
+            
+        # Käufe simulieren (Monetary - nur für manche User)
+        if np.random.random() > 0.6: # 40% Conversion Rate
+            num_purchases = np.random.randint(1, 5)
+            for _ in range(num_purchases):
+                p_date = acq_date + timedelta(days=np.random.randint(0, 180))
+                if p_date > now: p_date = now - timedelta(minutes=np.random.randint(1, 10))
+                events.append([user_id, p_date, "purchase", np.random.uniform(10, 500)])
+                
+    return pd.DataFrame(users, columns=["user_id", "acq_date"]), pd.DataFrame(events, columns=["user_id", "event_date", "type", "revenue"])
 
-# --- TAB 2: RFM ANALYSE & GEGENÜBERSTELLUNG ---
+df_users, df_events = generate_data()
+
+# --- SIDEBAR FILTER ---
+st.sidebar.header("Strategische Filter")
+df_users['cohort'] = df_users['acq_date'].dt.to_period('M').dt.to_timestamp()
+selected_months = st.sidebar.multiselect("Kohorten wählen:", options=sorted(df_users['cohort'].unique()), default=sorted(df_users['cohort'].unique()), format_func=lambda x: x.strftime('%B %Y'))
+
+filtered_users = df_users[df_users['cohort'].isin(selected_months)]
+df_filtered_events = df_events[df_events['user_id'].isin(filtered_users['user_id'])]
+
+tab1, tab2 = st.tabs(["📉 Retention (Nutzung)", "👤 RFM (Engagement vs. Value)"])
+
+# --- TAB 2: RFM DEEP-DIVE ---
 with tab2:
-    st.header("Deep-Dive: Kohorten-Vergleich & Segmente")
-
-    query_rfm = """
-        WITH user_first_mon AS (
-            SELECT user_id, strftime(MIN(DATE_TRUNC('month', purchase_date)), '%b %Y') as joined_month,
-                   MIN(DATE_TRUNC('month', purchase_date)) as joined_month_date
-            FROM df GROUP BY 1
-        ),
-        rfm_metrics AS (
-            SELECT 
-                user_id,
-                DATEDIFF('day', MAX(purchase_date), (SELECT MAX(purchase_date) FROM df) + INTERVAL 1 DAY) as recency,
-                COUNT(DISTINCT purchase_date) as frequency,
-                SUM(revenue) as monetary
-            FROM df GROUP BY 1
-        )
-        SELECT r.*, m.joined_month, m.joined_month_date 
-        FROM rfm_metrics r JOIN user_first_mon m ON r.user_id = m.user_id
-    """
-    rfm_table = duckdb.query(query_rfm).df()
-
-    def segment_user(row):
-        if row['frequency'] >= 8 and row['recency'] < 45: return 'Champions'
-        if row['frequency'] >= 4: return 'Loyal Customers'
-        if row['recency'] > 120: return 'At Risk'
-        return 'Standard'
+    st.header("RFM Analysis: Usage & Conversion")
     
-    rfm_table['Segment'] = rfm_table.apply(segment_user, axis=1)
+    # SQL: RFM Metriken berechnen basierend auf DEINER Logik
+    rfm_metrics = duckdb.query("""
+        SELECT 
+            u.user_id,
+            -- Recency: Letzter Besuch
+            date_diff('hour', MAX(CASE WHEN e.type = 'visit' THEN e.event_date END), timestamp '2025-01-08 12:00:00') as hours_since_visit,
+            -- Frequency: Anzahl der Besuche
+            COUNT(CASE WHEN e.type = 'visit' THEN 1 END) as visit_count,
+            -- Monetary: Summe Umsatz
+            COALESCE(SUM(e.revenue), 0) as total_revenue
+        FROM filtered_users u
+        LEFT JOIN df_filtered_events e ON u.user_id = e.user_id
+        GROUP BY 1
+    """).df()
 
-    # 1. RFM FILTER (Segment-Auswahl)
-    all_segments = rfm_table['Segment'].unique().tolist()
-    selected_segments = st.multiselect("Anzuzeigende Segmente filtern:", options=all_segments, default=all_segments)
+    def apply_buckets(row):
+        # Recency (Letzter Besuch)
+        if row['hours_since_visit'] < 1: r = 'A. < 1h (Active Now)'
+        elif row['hours_since_visit'] <= 10: r = 'B. 1-10h (Today)'
+        else: r = 'C. > 10h (Inactive)'
+        
+        # Frequency (Besuche/Engagement)
+        if row['visit_count'] > 30: f = 'A. Daily User'
+        elif row['visit_count'] > 10: f = 'B. Weekly User'
+        else: f = 'C. Monthly/Rare'
+        
+        # Monetary (Umsatz)
+        if row['total_revenue'] == 0: m = 'D. Not Converted'
+        elif row['total_revenue'] <= 30: m = 'C. Starter (< 30€)'
+        elif row['total_revenue'] <= 300: m = 'B. Core Customer'
+        else: m = 'A. High Value'
+        
+        return pd.Series([r, f, m])
 
+    rfm_metrics[['Recency', 'Frequency', 'Monetary']] = rfm_metrics.apply(apply_buckets, axis=1)
+
+    # VISUALISIERUNG
+    st.subheader("Nutzer-Verhalten & Monetarisierung")
+    c1, c2, c3 = st.columns(3)
+    
+    with c1:
+        st.info("**Recency (Besuch)**")
+        st.bar_chart(rfm_metrics['Recency'].value_counts().sort_index())
+    with c2:
+        st.info("**Frequency (App-Opens)**")
+        st.bar_chart(rfm_metrics['Frequency'].value_counts().sort_index())
+    with c3:
+        st.info("**Monetary (Umsatz)**")
+        st.bar_chart(rfm_metrics['Monetary'].value_counts().sort_index())
+
+    # KPI Sektion
     st.markdown("---")
-    col_sel1, col_sel2 = st.columns(2)
-    
-    available_months_sorted = sorted(rfm_table['joined_month_date'].unique())
-    month_options = [pd.to_datetime(x).strftime('%b %Y') for x in available_months_sorted]
+    k1, k2, k3 = st.columns(3)
+    converters = rfm_metrics[rfm_metrics['total_revenue'] > 0]
+    k1.metric("Anzahl User (Leads)", len(rfm_metrics))
+    k2.metric("Davon Käufer", len(converters))
+    k3.metric("Conversion Rate", f"{(len(converters)/len(rfm_metrics)*100):.1f}%")
 
-    with col_sel1:
-        month_a = st.selectbox("Monat A (Basis):", options=month_options, index=0)
-    with col_sel2:
-        month_b = st.selectbox("Monat B (Vergleich):", options=month_options, index=min(1, len(month_options)-1))
+    st.subheader("Strategische Kundenliste")
+    st.dataframe(rfm_metrics[['user_id', 'Recency', 'Frequency', 'Monetary', 'total_revenue']].sort_values('total_revenue', ascending=False), use_container_width=True)
 
-    # Daten filterung nach Monat UND Segment
-    comparison_df = rfm_table[
-        (rfm_table['joined_month'].isin([month_a, month_b])) & 
-        (rfm_table['Segment'].isin(selected_segments))
-    ]
-    
-    comp_viz = comparison_df.groupby(['joined_month', 'Segment']).size().reset_index(name='Anzahl')
-
-    # ADAPTIVE BAR CHART
-    fig_compare = px.bar(comp_viz, x='Segment', y='Anzahl', color='joined_month',
-                         barmode='group', title=f"Segment-Vergleich: {month_a} vs. {month_b}",
-                         color_discrete_sequence=['#636EFA', '#EF553B'])
-    
-    st.plotly_chart(fig_compare, use_container_width=True, theme="streamlit")
-
-    # --- 2. STRATEGISCHE ÜBERSICHTSTABELLE ---
-    st.markdown("### 📊 Kohorten-Performance (Total & Segmente)")
-    
-    # Pivot-Tabelle erstellen
-    summary_pivot = rfm_table.pivot_table(
-        index='joined_month', 
-        columns='Segment', 
-        values='user_id', 
-        aggfunc='count', 
-        fill_value=0
-    )
-    
-    # Total Spalte hinzufügen
-    summary_pivot['Total Customers'] = summary_pivot.sum(axis=1)
-    
-    # Sortierung nach Datum (nicht alphabetisch)
-    month_order = {name: i for i, name in enumerate(month_options)}
-    summary_pivot = summary_pivot.reset_index()
-    summary_pivot['order'] = summary_pivot['joined_month'].map(month_order)
-    summary_pivot = summary_pivot.sort_values('order').drop('order', axis=1).set_index('joined_month')
-
-    # TOTAL ZEILE BERECHNEN
-    total_row = summary_pivot.sum().to_frame().T
-    total_row.index = ['TOTAL']
-    
-    # Zusammenführen
-    summary_final = pd.concat([summary_pivot, total_row])
-    
-    # Styling: Markiere die Total Zeile
-    st.dataframe(summary_final.style.highlight_max(axis=0, color='#1f77b422'), use_container_width=True)
-
-st.markdown("---")
-st.caption("Director of Growth Intelligence Dashboard | Adaptive UI | Volker Schulz")
+st.caption("Growth Portfolio | Recency = Visit | Frequency = Usage | Monetary = Revenue")
