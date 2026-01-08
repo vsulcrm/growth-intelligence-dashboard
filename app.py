@@ -5,16 +5,9 @@ import plotly.express as px
 import numpy as np
 
 # 1. PAGE CONFIGURATION
-st.set_page_config(page_title="Growth Intelligence Dashboard", layout="wide")
+st.set_page_config(page_title="Growth Intelligence", layout="wide")
 
-# CSS für bessere Lesbarkeit
-st.markdown("""
-    <style>
-    [data-testid="stMetricValue"] { font-size: 1.8rem; }
-    </style>
-    """, unsafe_allow_html=True)
-
-st.title("📊 Strategic Growth & RFM Dashboard")
+st.title("🚀 Strategic Growth & RFM Dashboard")
 st.markdown("---")
 
 # 2. SYNTHETIC DATA ENGINE
@@ -39,7 +32,6 @@ tab1, tab2 = st.tabs(["📉 Kohorten-Analyse (Retention)", "👤 RFM Segmentieru
 with tab1:
     st.header("Monthly Retention Analysis")
     
-    # SQL LOGIK: Achte darauf, dass der Block mit """) endet
     query_cohort = """
         WITH user_cohorts AS (
             SELECT user_id, MIN(DATE_TRUNC('month', purchase_date)) AS cohort_month
@@ -61,10 +53,10 @@ with tab1:
     """
     cohort_raw = duckdb.query(query_cohort).df()
 
-    # FILTER IN DER SIDEBAR
+    # SIDEBAR FILTER
     all_months = sorted(cohort_raw['cohort_month'].unique())
     selected_months_raw = st.sidebar.multiselect(
-        "Start-Kohorten filtern:", 
+        "Kohorten filtern:", 
         options=all_months, 
         default=all_months,
         format_func=lambda x: x.strftime('%B %Y')
@@ -77,18 +69,20 @@ with tab1:
         pivot_df = pivot_df.reindex(filtered_cohorts['cohort_name'].unique()) 
         retention_matrix = pivot_df.divide(pivot_df.iloc[:, 0], axis=0) * 100
 
+        # ADAPTIVE HEATMAP
         fig = px.imshow(retention_matrix,
-                        labels=dict(x="Monate nach Erstkauf", y="Start-Kohorte", color="Retention %"),
-                        color_continuous_scale='RdYlGn', text_auto='.1f', aspect="auto", template="plotly_dark")
+                        labels=dict(x="Monate nach Erstkauf", y="Kohorte", color="Retention %"),
+                        color_continuous_scale='RdYlGn', text_auto='.1f', aspect="auto")
         
         fig.update_layout(xaxis=dict(tickmode='linear', dtick=1, side='top'))
-        st.plotly_chart(fig, use_container_width=True)
+        # theme="streamlit" macht die Grafik adaptiv für Light/Dark
+        st.plotly_chart(fig, use_container_width=True, theme="streamlit")
     else:
-        st.warning("Bitte Kohorten wählen.")
+        st.warning("Bitte Kohorten in der Sidebar wählen.")
 
-# --- TAB 2: RFM ANALYSE ---
+# --- TAB 2: RFM ANALYSE & GEGENÜBERSTELLUNG ---
 with tab2:
-    st.header("Deep-Dive: Kohorten-Vergleich im RFM-Modell")
+    st.header("Deep-Dive: Kohorten-Vergleich & Segmente")
 
     query_rfm = """
         WITH user_first_mon AS (
@@ -117,40 +111,66 @@ with tab2:
     
     rfm_table['Segment'] = rfm_table.apply(segment_user, axis=1)
 
+    # 1. RFM FILTER (Segment-Auswahl)
+    all_segments = rfm_table['Segment'].unique().tolist()
+    selected_segments = st.multiselect("Anzuzeigende Segmente filtern:", options=all_segments, default=all_segments)
+
     st.markdown("---")
     col_sel1, col_sel2 = st.columns(2)
     
-    # Korrekte Sortierung der Monate für die Auswahl
     available_months_sorted = sorted(rfm_table['joined_month_date'].unique())
     month_options = [pd.to_datetime(x).strftime('%b %Y') for x in available_months_sorted]
 
     with col_sel1:
-        month_a = st.selectbox("Basis-Monat (A):", options=month_options, index=0)
+        month_a = st.selectbox("Monat A (Basis):", options=month_options, index=0)
     with col_sel2:
-        month_b = st.selectbox("Vergleichs-Monat (B):", options=month_options, index=min(1, len(month_options)-1))
+        month_b = st.selectbox("Monat B (Vergleich):", options=month_options, index=min(1, len(month_options)-1))
 
-    comparison_df = rfm_table[rfm_table['joined_month'].isin([month_a, month_b])]
+    # Daten filterung nach Monat UND Segment
+    comparison_df = rfm_table[
+        (rfm_table['joined_month'].isin([month_a, month_b])) & 
+        (rfm_table['Segment'].isin(selected_segments))
+    ]
+    
     comp_viz = comparison_df.groupby(['joined_month', 'Segment']).size().reset_index(name='Anzahl')
 
+    # ADAPTIVE BAR CHART
     fig_compare = px.bar(comp_viz, x='Segment', y='Anzahl', color='joined_month',
-                         barmode='group', template="plotly_dark",
-                         title=f"Segment-Verteilung: {month_a} vs. {month_b}",
+                         barmode='group', title=f"Segment-Vergleich: {month_a} vs. {month_b}",
                          color_discrete_sequence=['#636EFA', '#EF553B'])
-    st.plotly_chart(fig_compare, use_container_width=True)
-
-    # METRIKEN
-    data_a = rfm_table[rfm_table['joined_month'] == month_a]
-    data_b = rfm_table[rfm_table['joined_month'] == month_b]
-    m1, m2, m3 = st.columns(3)
     
-    ch_a = len(data_a[data_a['Segment'] == 'Champions'])
-    ch_b = len(data_b[data_b['Segment'] == 'Champions'])
-    m1.metric("Champions", ch_b, delta=int(ch_b - ch_a))
+    st.plotly_chart(fig_compare, use_container_width=True, theme="streamlit")
 
-    rev_a = data_a['monetary'].mean() if not data_a.empty else 0
-    rev_b = data_b['monetary'].mean() if not data_b.empty else 0
-    m2.metric("Ø Umsatz", f"{rev_b:.2f}€", delta=f"{(rev_b - rev_a):.2f}€")
-    m3.metric("Kunden", len(data_b), delta=int(len(data_b) - len(data_a)))
+    # --- 2. STRATEGISCHE ÜBERSICHTSTABELLE ---
+    st.markdown("### 📊 Kohorten-Performance (Total & Segmente)")
+    
+    # Pivot-Tabelle erstellen
+    summary_pivot = rfm_table.pivot_table(
+        index='joined_month', 
+        columns='Segment', 
+        values='user_id', 
+        aggfunc='count', 
+        fill_value=0
+    )
+    
+    # Total Spalte hinzufügen
+    summary_pivot['Total Customers'] = summary_pivot.sum(axis=1)
+    
+    # Sortierung nach Datum (nicht alphabetisch)
+    month_order = {name: i for i, name in enumerate(month_options)}
+    summary_pivot = summary_pivot.reset_index()
+    summary_pivot['order'] = summary_pivot['joined_month'].map(month_order)
+    summary_pivot = summary_pivot.sort_values('order').drop('order', axis=1).set_index('joined_month')
+
+    # TOTAL ZEILE BERECHNEN
+    total_row = summary_pivot.sum().to_frame().T
+    total_row.index = ['TOTAL']
+    
+    # Zusammenführen
+    summary_final = pd.concat([summary_pivot, total_row])
+    
+    # Styling: Markiere die Total Zeile
+    st.dataframe(summary_final.style.highlight_max(axis=0, color='#1f77b422'), use_container_width=True)
 
 st.markdown("---")
-st.caption("Growth Intelligence Dashboard | Case Study | Volker Schulz")
+st.caption("Director of Growth Intelligence Dashboard | Adaptive UI | Volker Schulz")
