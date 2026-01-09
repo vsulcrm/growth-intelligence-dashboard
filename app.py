@@ -51,6 +51,7 @@ all_months = sorted(df_users['cohort'].unique())
 
 # --- 3. HEADER AREA (Logic & Sidebar) ---
 st.title("Growth Intelligence Dashboard")
+st.caption(f"Current Mode: {'Dark' if dark_mode else 'Light'} (Toggle in Sidebar)")
 
 # View Selector
 view_mode = st.radio("Select Analysis Focus:", ["📉 Retention Matrix", "👤 RFM Score Model", "💰 LTV Prediction"], horizontal=True)
