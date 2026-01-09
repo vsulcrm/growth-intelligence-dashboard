@@ -272,7 +272,10 @@ elif view_mode == "💰 LTV Prediction":
                     c = 0 # No data at all?
                 formula_str = f"ARPU = {m:.2f} * Month + {c:.2f} (Avg Slope Fallback)"
             
-            formula_data.append({'Cohort': cohort, 'Formula': formula_str, 'Proj. Month 12': m*12 + c})
+            # User Request: "LTV prediction should be a table that shows values 12 months after Launch"
+            # We calculate value at x=12
+            val_12 = m*12 + c
+            formula_data.append({'Cohort': cohort, 'Projected LTV (Month 12)': f"€{val_12:.2f}", 'Formula': formula_str})
 
             # Project forward
             start_proj = x_known[-1] + 1 if x_known else 0
@@ -286,7 +289,7 @@ elif view_mode == "💰 LTV Prediction":
                           title="LTV Progression (Actual vs Cumulative Projected)", template=chart_template)
         st.plotly_chart(fig_ltv, use_container_width=True)
         
-        st.subheader("Regression Models")
+        st.subheader("Predicted LTV (12 Months Post-Acquisition)")
         st.dataframe(pd.DataFrame(formula_data).set_index("Cohort"))
 
 # --- TAB: RFM SCORE MODEL ---
@@ -509,11 +512,12 @@ else:
     # --- 5. GROUP COMPARISON (BAR CHART) ---
     st.subheader("Comparison of Selected RFM Groups")
     
-    # Recalculate filtered set for Bar Chart based on Cohort Filter + RFM Group Filter (if selected?)
+    # Recalculate filtered set for Bar Chart based on Cohort Filter + RFM Group Filter
     # "Comparison of RFM combination should reflect the selected groups" -> Yes, Group Filter applies.
-    # What about Cohort Filter? Should probably also apply for consistency.
+    # Note: rfm_right is already filtered by the GLOBAL Sidebar Cohort Filter.
+    # We just need to apply the mask_right (which contains the RFM Group Filter logic).
     
-    final_mask_right = mask_right & rfm_right['joined_month'].isin(selected_cohorts)
+    final_mask_right = mask_right 
     bar_data = rfm_right[final_mask_right]
     
     if bar_data.empty:
