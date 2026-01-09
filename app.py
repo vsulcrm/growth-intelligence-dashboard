@@ -220,36 +220,23 @@ else:
         st.subheader("Filter Settings")
         
         # Reference Month Selector
-        # Default to 2nd to last (Nov 2025) so Dec 2025 is next, or similar.
-        default_idx = len(available_months_str) - 2 if len(available_months_str) > 1 else 0
-        selected_month_str = st.selectbox("Select Analysis Month (Timeframe):", options=available_months_str, index=default_idx)
+        # User Request: Select "Current" (Right) -> Show "Prior" (Left)
+        # Default to last available month
+        default_idx = len(available_months_str) - 1
+        selected_month_str = st.selectbox("Select Analysis Month (Current):", options=available_months_str, index=default_idx)
         
         # Calculate Dates
-        base_date = datetime.strptime(selected_month_str, '%b %Y')
-        next_date = base_date + pd.DateOffset(months=1)
+        # Selected = Right Side (Current Month Status)
+        # Snapshot for Right: End of Selected Month (or 1st of Next Month)
+        current_month_date = datetime.strptime(selected_month_str, '%b %Y') 
         
-        # For RFM snapshot calculation, we usually take the END of that month?
-        # User says "Month that is old" (Left) vs "Month that follows" (Right).
-        # Let's say we snapshot at the End of the selected months? OR Beginning?
-        # Usually RFM is "As of".
-        # Let's use End of Month for robustness, or +30 days. 
-        # Simpler: "As of 1st of Next Month" == Status of Previous Month?
-        # Let's set snapshot dates to the 1st of the displayed months to catch "State at that time".
+        # Left Side = Previous Month 
+        prev_month_date = current_month_date - pd.DateOffset(months=1)
         
-        # Actually user wants "Month Left" -> "Month Right".
-        # Left: RFM State at end of Base Month?
-        # Right: RFM State at end of Next Month?
-        # Let's use:
-        # Prev Date = Base Month + 1 Month (Start) - 1 Day (End of Base)? 
-        # Let's stick to: Snapshot at precise points. 
-        # Snapshot 1 (Left): base_date + 30 days (approx end of month)
-        # Snapshot 2 (Right): next_date + 30 days
-        
-        # Let's just use the 1st of the Next Month as the cutoff for the "Month" status.
-        # e.g. Status of "Jan" is captured at Feb 1st. 
-        
-        date_left = base_date + pd.DateOffset(months=1) # Proxy for End of Base Month
-        date_right = next_date + pd.DateOffset(months=1) # Proxy for End of Next Month
+        # Snapshots (Proxy: 1st of Month After)
+        # Status of "May" is known at "June 1st"
+        date_right = current_month_date + pd.DateOffset(months=1) # End of Current (Selected) Month
+        date_left = current_month_date # End of Previous Month ( == Start of Current Month)
         
         # A. Cohort Filter (Already handled by global)
         
@@ -261,14 +248,14 @@ else:
         rfm_right = calculate_rfm_scores(rfm_right_raw)
         
         # B. RFM Group Filter - Single Select
-        all_groups = sorted(rfm_left['RFM_Group'].unique()) if not rfm_left.empty else []
+        all_groups = sorted(rfm_right['RFM_Group'].unique()) if not rfm_right.empty else []
         if all_groups:
              all_groups.insert(0, "All")
         
         selected_group = st.selectbox("Filter RFM Group:", options=all_groups, index=0)
         
-        # C. Cohort Subset (for Heatmap)
-        available_cohorts = rfm_left.sort_values('sort_key')['joined_month'].unique()
+        # C. Cohort Subset (for Heatmap specifically)
+        available_cohorts = rfm_right.sort_values('sort_key')['joined_month'].unique()
         preselected = [c for c in available_cohorts if pd.to_datetime(c).strftime('%Y-%m') in [d.strftime('%Y-%m') for d in current_selection]]
         
         # Filter Logic
@@ -293,8 +280,8 @@ else:
         
         c1, c_arr, c2 = st.columns([2,1,2])
         
-        label_left = base_date.strftime('%B %Y')
-        label_right = next_date.strftime('%B %Y')
+        label_left = prev_month_date.strftime('%B %Y')
+        label_right = current_month_date.strftime('%B %Y')
         
         with c1:
             st.metric(label=f"Users ({label_left})", value=count_left)
