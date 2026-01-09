@@ -482,6 +482,7 @@ else:
         # User Request: Only 1 Number (Base Month)
         count_left = filtered_left['user_id'].nunique()
         label_left = prev_month_date.strftime('%B %Y')
+        label_right = current_month_date.strftime('%B %Y') # Restore for later use
         st.metric(label=f"Total Users ({label_left})", value=count_left)
             
     st.markdown("---")
