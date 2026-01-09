@@ -275,8 +275,6 @@ elif view_mode == "💰 LTV Prediction":
                     if m_idx in arpu_df.columns:
                         val = arpu_df.at[cohort, m_idx]
                     else:
-                        # Fallback to model if missing intermediate actual? 
-                        # Or just use model. Usually actuals are strictly sequential.
                         val = m * m_idx + c
                 else:
                     # Predicted
@@ -286,6 +284,9 @@ elif view_mode == "💰 LTV Prediction":
                 val = max(0, val)
                 row_dict[m_idx] = val
             
+            # Add Formula Column
+            row_dict['Formula'] = f"{formula_str}"
+            
             ltv_matrix_data.append(row_dict)
             
         ltv_df = pd.DataFrame(ltv_matrix_data).set_index("Cohort")
@@ -293,18 +294,26 @@ elif view_mode == "💰 LTV Prediction":
         ordered_ltv_labels = sorted(ltv_df.index, key=lambda x: datetime.strptime(x, '%b %Y'))
         ltv_df = ltv_df.reindex(ordered_ltv_labels)
         
-        # Heatmap Visualization
-        # We want to format the text as Currency
-        ltv_text = ltv_df.applymap(lambda x: f"€{x:.2f}")
+        # Display as Table (with Formatting)
+        # Using Styler for Gradient on 0-12 columns only
+        st.subheader("LTV Matrix (Actuals + Predictions)")
         
-        fig_ltv_heat = px.imshow(ltv_df, text_auto=False, color_continuous_scale='Greens',
-                                 labels=dict(x="Months Since Acquisition", y="Cohort", color="LTV (€)"),
-                                 aspect="auto", template=chart_template)
+        # Format Formula column separately?
+        # Streamlit dataframe styling is a bit limited for mixed types (Strings + Floats).
+        # We can just show the raw dataframe with formatting for numbers.
         
-        # Apply custom text layer
-        fig_ltv_heat.update_traces(text=ltv_text, texttemplate="%{text}")
+        # Format numeric columns as currency strings for display? 
+        # Then gradient won't work in standard dataframe easily unless we use pandas Styler.
         
-        st.plotly_chart(fig_ltv_heat, use_container_width=True)
+        numeric_cols = [c for c in ltv_df.columns if c != 'Formula']
+        
+        # Create display DF
+        disp_df = ltv_df.copy()
+        for c in numeric_cols:
+             disp_df[c] = disp_df[c].apply(lambda x: f"€{x:.2f}")
+             
+        # Use simple dataframe for now as requested "Tabelle"
+        st.dataframe(disp_df, use_container_width=True)
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
@@ -438,37 +447,24 @@ else:
     rfm_right_raw = get_rfm_at_date(date_right)
     
     # --- STRICT MOM FLOW LOGIC ---
-    # User Request: "I want to see the 100 users from the first month in the second month"
-    # Filter rfm_right_raw to ONLY include users present in rfm_left_raw
     valid_users = rfm_left_raw['user_id'].unique()
     rfm_right_raw = rfm_right_raw[rfm_right_raw['user_id'].isin(valid_users)]
     
     rfm_left = calculate_rfm_scores(rfm_left_raw)
     rfm_right = calculate_rfm_scores(rfm_right_raw)
     
-    # --- 3. TOP SUMMARY (MoM Flow) ---
+    # --- 3. TOP SUMMARY ---
+    # User Request: "Zeige bei RFM nur eine Zahl an (die Gesamtnutzer für den start monat) und den Filter."
        
-    st.markdown("### Month-Over-Month Flow")
+    st.markdown("### Analysis Group Summary")
     
-    # Get available RFM groups for filter logic (but filter is later)
     all_groups = sorted(rfm_right['RFM_Group'].unique()) if not rfm_right.empty else []
     if all_groups:
          all_groups.insert(0, "All")
     
-    # For summary, we need the group filter "available" but perhaps we place it here?
-    # User said "Filters next to each section". Summary is a section. 
-    # Let's put Group Filter next to Summary? Or Next to Bar Chart?
-    # "User flow summary should show how many customers more or less in the SELECTED GROUP"
-    # So Group Filter affects Summary, Heatmap (No?), and Bar Chart.
-    # If it affects Summary, it should probably be above Summary or Next to it.
-    
-    # Let's put Group Filter at the top with Month Selector? Or Next to Summary?
-    # Let's put Group Filter next to Summary.
-    
-    c_sum, c_filt = st.columns([3, 1])
+    c_sum, c_filt = st.columns([1, 1])
     
     with c_filt:
-         st.subheader("Filter")
          selected_group = st.selectbox("Filter RFM Group:", options=all_groups, index=0)
     
     # Filter Logic
@@ -483,24 +479,10 @@ else:
     filtered_right = rfm_right[mask_right]
     
     with c_sum:
-        # Counts
+        # User Request: Only 1 Number (Base Month)
         count_left = filtered_left['user_id'].nunique()
-        count_right = filtered_right['user_id'].nunique()
-        diff = count_right - count_left
-        
-        c1, c_arr, c2 = st.columns([2,1,2])
-        
         label_left = prev_month_date.strftime('%B %Y')
-        label_right = current_month_date.strftime('%B %Y')
-        
-        with c1:
-            st.metric(label=f"Users ({label_left})", value=count_left)
-            
-        with c_arr:
-             st.markdown(f"<h2 style='text-align: center; color: {'green' if diff >= 0 else 'red'};'>{'➜' if diff == 0 else ('↗' if diff > 0 else '↘')}</h2>", unsafe_allow_html=True)
-        
-        with c2:
-            st.metric(label=f"Users ({label_right})", value=count_right, delta=int(diff))
+        st.metric(label=f"Total Users ({label_left})", value=count_left)
             
     st.markdown("---")
 
