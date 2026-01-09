@@ -311,6 +311,22 @@ elif view_mode == "💰 LTV Prediction":
         # Display as Table (with Formatting)
         # Using Styler to color code Actual vs Predicted
         st.subheader("LTV Matrix (Actuals vs Predictions)")
+        
+        st.info("""
+        **Explanation of Values:**
+        The values represent the **Cumulative Average Revenue per User (ARPU)**. 
+        *   e.g. **71.02** means: "On average, a user from this cohort has generated **€71.02** in total revenue by this month."
+        
+        **Prediction Formula (Linear Projection):**
+        For future months (blue), the value is calculated using the specific trend line for that cohort:
+        $$
+        LTV(t) = m \\cdot t + c
+        $$
+        *   **$t$**: Cohort Age (Months since joining 0, 1, 2...)
+        *   **$m$**: Average Monthly Revenue Growth per User (Slope)
+        *   **$c$**: Base Value (Intercept)
+        """)
+        
         st.caption("Actuals are standard text. Predictions are **blue**.")
         
         def style_actual_vs_predicted(df):
@@ -349,20 +365,7 @@ elif view_mode == "💰 LTV Prediction":
             st.error(f"Styling Error: {e}")
             st.dataframe(ltv_df, use_container_width=True)
 
-        st.info("""
-        **Explanation of Values:**
-        The values represent the **Cumulative Average Revenue per User (ARPU)**. 
-        *   e.g. **71.02** means: "On average, a user from this cohort has generated **€71.02** in total revenue by this month."
-        
-        **Prediction Formula (Linear Projection):**
-        For future months (blue), the value is calculated using the specific trend line for that cohort:
-        $$
-        LTV(t) = m \\cdot t + c
-        $$
-        *   **$t$**: Cohort Age (Months since joining 0, 1, 2...)
-        *   **$m$**: Average Monthly Revenue Growth per User (Slope)
-        *   **$c$**: Base Value (Intercept)
-        """)
+
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
