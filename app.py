@@ -11,7 +11,7 @@ st.set_page_config(page_title="Growth Intelligence", layout="wide")
 st.sidebar.title("App Settings")
 chart_template = "plotly_dark"
 
-# --- 2. DATA ENGINE (Realistische Simulation) ---
+# --- 2. DATA ENGINE (Realistic Simulation) ---
 @st.cache_data
 def generate_data():
     np.random.seed(42)
@@ -22,7 +22,7 @@ def generate_data():
         acq = datetime(2025, 1, 1) + timedelta(days=np.random.randint(0, 365))
         users.append([uid, acq])
         
-        # Churn-Logik für Realistic SaaS Retention (Shifted Hyperbolic / Power Law)
+        # Churn Logic for Realistic SaaS Retention (Shifted Hyperbolic / Power Law)
         # 1 / (1 + alpha * t) mimics "early drop, then flatten"
         # t is month index (0 to 12)
         dates = pd.date_range(acq, periods=13, freq='30D')
@@ -48,15 +48,15 @@ df_users, df_events = generate_data()
 df_users['cohort'] = df_users['acq_date'].dt.to_period('M').dt.to_timestamp()
 all_months = sorted(df_users['cohort'].unique())
 
-# --- 3. HEADER BEREICH (Logik & Sidebar) ---
+# --- 3. HEADER AREA (Logic & Sidebar) ---
 st.title("🚀 Product Growth Intelligence")
 
 # View Selector
-view_mode = st.radio("Analyseschwerpunkt wählen:", ["📉 Retention Matrix", "👤 RFM Score Modell"], horizontal=True)
+view_mode = st.radio("Select Analysis Focus:", ["📉 Retention Matrix", "👤 RFM Score Model"], horizontal=True)
 
-st.sidebar.subheader("Kohorten-Filter")
+st.sidebar.subheader("Cohort Filter")
 
-# Session State für Checkboxen
+# Session State for Checkboxes
 if 'selected_months' not in st.session_state:
     st.session_state.selected_months = [m for m in all_months]
 
@@ -72,7 +72,7 @@ def toggle_all():
         st.session_state.selected_months = []
 
 # Master Checkbox (Select/Deselect All)
-st.sidebar.checkbox("Alle Monate an/abwählen", value=True, 
+st.sidebar.checkbox("Select/Deselect All Months", value=True, 
                     key="master_cb", on_change=toggle_all)
 
 current_selection = []
@@ -89,7 +89,7 @@ for m in all_months:
 st.session_state.selected_months = current_selection
 
 if not current_selection:
-    st.warning("Bitte wählen Sie mindestens eine Kohorte aus.")
+    st.warning("Please select at least one cohort.")
     st.stop()
 
 filtered_users = df_users[df_users['cohort'].isin(current_selection)]
@@ -97,11 +97,11 @@ df_filtered_events = df_events[df_events['user_id'].isin(filtered_users['user_id
 
 st.markdown("---")
 
-# --- 4. BODY BEREICH ---
+# --- 4. BODY AREA ---
 
 # --- TAB: RETENTION ---
 if view_mode == "📉 Retention Matrix":
-    st.header("Kohorten-Retention (Chronologische 12-Monats-Sicht)")
+    st.header("Cohort Retention (Chronological 12-Month View)")
     
     ret_query = """
         WITH uc AS (SELECT user_id, DATE_TRUNC('month', acq_date) as c_month FROM filtered_users),
@@ -124,25 +124,25 @@ if view_mode == "📉 Retention Matrix":
         ordered_labels = cohort_data.sort_values('sort_key')['cohort'].unique()
         pivot = pivot.reindex(ordered_labels)
         
-        # Normalisierung (Monat 0 = 100%)
+        # Normalization (Month 0 = 100%)
         retention_matrix = (pivot.divide(pivot.iloc[:, 0], axis=0) * 100).clip(upper=100.0)
         
         fig_heat = px.imshow(retention_matrix, text_auto='.1f', color_continuous_scale='RdYlGn',
-                             labels=dict(x="Monate nach Akquise", y="Kohorte", color="Retention %"),
+                             labels=dict(x="Months Since Acquisition", y="Cohort", color="Retention %"),
                              aspect="auto", template=chart_template)
         st.plotly_chart(fig_heat, use_container_width=True)
 
         st.subheader("Retention Milestones (M1, M3, M6, M12)")
-        sel_c = st.selectbox("Kohorte für KPI-Check:", options=retention_matrix.index)
+        sel_c = st.selectbox("Cohort for KPI Check:", options=retention_matrix.index)
         kpi = retention_matrix.loc[sel_c]
         c1, c2, c3, c4 = st.columns(4)
         for i, m in enumerate([1, 3, 6, 12]):
             val = kpi[m] if m in kpi else 0
-            [c1, c2, c3, c4][i].metric(f"Monat {m}", f"{val:.1f}%")
+            [c1, c2, c3, c4][i].metric(f"Month {m}", f"{val:.1f}%")
 
-# --- TAB: RFM SCORE MODELL ---
+# --- TAB: RFM SCORE MODEL ---
 else: 
-    st.header("RFM Score Modell Vergleich (1-3 Tertile)")
+    st.header("RFM Score Model Comparison (1-3 Tertiles)")
     
     rfm_query = """
         SELECT 
@@ -158,7 +158,7 @@ else:
     """
     rfm_df = duckdb.query(rfm_query).df()
 
-    # Scoring Logik (1-3 Tertile)
+    # Scoring Logic (1-3 Tertiles)
     def calculate_rfm_scores(df):
         df = df.copy()
         df['R'] = pd.qcut(df['r_raw'], 3, labels=["3", "2", "1"]).astype(str)
@@ -167,53 +167,73 @@ else:
         df['RFM_Group'] = df['R'] + "-" + df['F'] + "-" + df['M']
         return df
 
-    rfm_scored = calculate_rfm_scores(rfm_df)
-    
-    # --- RFM HEATMAP (ZUSATZ-WUNSCH) ---
-    st.subheader("RFM Group Heatmap: Frequency vs Recency (Color = Avg Revenue)")
-    
-    # Allow specific cohort selection based on current global filter
-    available = rfm_scored.sort_values('sort_key')['joined_month'].unique()
-    # Which ones are currently "active" in the main filter?
-    preselected = [c for c in available if pd.to_datetime(c).strftime('%Y-%m') in [d.strftime('%Y-%m') for d in current_selection]]
-    
-    selected_heatmap_cohorts = st.multiselect("Kohorten für Heatmap auswählen (Teilmenge der globalen Auswahl):", 
-                                              options=available, 
-                                              default=preselected)
-    
-    if not selected_heatmap_cohorts:
-        st.warning("Keine Kohorten für Heatmap ausgewählt.")
-    else:
-        # Aggregation für Heatmap
-        heatmap_data = rfm_scored[rfm_scored['joined_month'].isin(selected_heatmap_cohorts)].groupby(['F', 'R'])['m_raw'].mean().reset_index()
-        heatmap_pivot = heatmap_data.pivot(index='F', columns='R', values='m_raw')
-        
-        # Sort index/columns to ensure order 3-2-1 if necessary, though 1-2-3 is sorted string
-        # Recency: 3=Best/Newest, 1=Oldest.
-        # Frequency: 3=High, 1=Low.
-        # We want X=Recency, Y=Frequency.
-        # Order should be R: 3, 2, 1 (New -> Old) ? Or 1, 2, 3? 
-        # Usually R score 3 is "Recent" (Good).
-        
-        fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='.0f', color_continuous_scale='Viridis',
-                                 labels=dict(x="Recency Score (3=Frisch)", y="Frequency Score (3=Oft)", color="Ø Umsatz €"),
-                                 template=chart_template)
-        st.plotly_chart(fig_rfm_heat, use_container_width=True)
+    # Calculate metrics for the "M1 -> M2" visual (Migration/Flow)
+    total_users_count = rfm_scored['user_id'].nunique()
+    # Simple proxy for "Active": Frequency > 1 or Recency is '3' (Recent)
+    # Let's use Recency Score = '3' (which is the top tertile, i.e., most recent)
+    active_recent_users = rfm_scored[rfm_scored['R'] == '3']['user_id'].nunique()
 
-    # Gruppen-Vergleich (Bar)
-    st.subheader("Vergleich der Top RFM-Kombinationen")
+    # --- TOP SECTION: M1 -> M2 (Summary Flow) ---
+    st.markdown("### User Flow Summary")
+    c_m1, c_arrow, c_m2 = st.columns([2, 1, 2])
     
-    comp_df = rfm_scored[rfm_scored['joined_month'].isin(selected_heatmap_cohorts)]
-    group_stats = comp_df.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
+    with c_m1:
+        st.info(f"**Total Tracked Users (M1)**\n\n# {total_users_count}")
     
-    # Sortierung: Immer absteigend nach Anzahl (Gesamt oder pro Gruppe)
-    # Hier simple sort by count descending across all rows
-    group_stats = group_stats.sort_values(by="count", ascending=False)
-    
-    fig_groups = px.bar(group_stats, x="RFM_Group", y="count", color="joined_month", barmode="group",
-                        template=chart_template)
-    st.plotly_chart(fig_groups, use_container_width=True)
+    with c_arrow:
+        st.markdown("<h1 style='text-align: center; color: gray;'>➜</h1>", unsafe_allow_html=True)
+        
+    with c_m2:
+        st.success(f"**High Recency Users (M2)**\n\n# {active_recent_users}")
 
-# --- 5. FOOTER BEREICH ---
+    st.markdown("---")
+
+    # --- MAIN SPLIT: FILTER (LEFT) | RFM CONTENT (RIGHT) ---
+    col_filter, col_content = st.columns([1, 3])
+    
+    with col_filter:
+        st.subheader("Filter Settings")
+        st.caption("Refine the RFM analysis by selecting specific join cohorts.")
+        
+        # Allow specific cohort selection based on current global filter
+        available = rfm_scored.sort_values('sort_key')['joined_month'].unique()
+        # Which ones are currently "active" in the main filter?
+        preselected = [c for c in available if pd.to_datetime(c).strftime('%Y-%m') in [d.strftime('%Y-%m') for d in current_selection]]
+        
+        selected_heatmap_cohorts = st.multiselect("Select Cohorts:", 
+                                                  options=available, 
+                                                  default=preselected)
+
+    with col_content:
+        # --- RFM HEATMAP ---
+        st.subheader("RFM Group Heatmap: Frequency vs Recency")
+        
+        if not selected_heatmap_cohorts:
+            st.warning("No cohorts selected for heatmap.")
+        else:
+            # Aggregation for Heatmap
+            heatmap_data = rfm_scored[rfm_scored['joined_month'].isin(selected_heatmap_cohorts)].groupby(['F', 'R'])['m_raw'].mean().reset_index()
+            heatmap_pivot = heatmap_data.pivot(index='F', columns='R', values='m_raw')
+            
+            fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='.0f', color_continuous_scale='Viridis',
+                                     labels=dict(x="Recency Score (3=Recent)", y="Frequency Score (3=Frequent)", color="Avg Revenue €"),
+                                     template=chart_template)
+            st.plotly_chart(fig_rfm_heat, use_container_width=True)
+
+        # --- GROUP COMPARISON ---
+        st.subheader("Comparison of Top RFM Combinations")
+        
+        if selected_heatmap_cohorts:
+            comp_df = rfm_scored[rfm_scored['joined_month'].isin(selected_heatmap_cohorts)]
+            group_stats = comp_df.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
+            
+            # Sorting
+            group_stats = group_stats.sort_values(by="count", ascending=False)
+            
+            fig_groups = px.bar(group_stats, x="RFM_Group", y="count", color="joined_month", barmode="group",
+                                template=chart_template)
+            st.plotly_chart(fig_groups, use_container_width=True)
+
+# --- 5. FOOTER AREA ---
 st.markdown("---")
 st.caption("Growth Intelligence Dashboard | © 2026 Volker Schulz | RFM 1-3 Model & Retention Heatmap")
