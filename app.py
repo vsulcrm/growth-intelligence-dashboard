@@ -307,50 +307,23 @@ elif view_mode == "💰 LTV Prediction":
         ordered_ltv_labels = sorted(ltv_df.index, key=lambda x: datetime.strptime(x, '%b %Y'))
         ltv_df = ltv_df.reindex(ordered_ltv_labels)
         
-        # Display as Table (with Formatting)
-        # Using Styler to color code Actual vs Predicted
+        # Display as Table (Simple)
         st.subheader("LTV Matrix (Actuals vs Predictions)")
-        st.caption("Actuals are standard text. Predictions are **blue**.")
-        
-        def style_actual_vs_predicted(df):
-            # Returns a DataFrame of CSS strings
-            styles = pd.DataFrame('', index=df.index, columns=df.columns)
-            
-            sim_now_limit = datetime(2026, 1, 8, 12, 0)
-            
-            for cohort in df.index:
-                try:
-                    c_date = datetime.strptime(cohort, '%b %Y')
-                except:
-                    continue
-                    
-                for col in df.columns:
-                    # Column names are integers 0..12
-                    if isinstance(col, int): 
-                        check_date = c_date + pd.DateOffset(months=col)
-                        if check_date > sim_now_limit:
-                            # Predicted
-                            styles.at[cohort, col] = 'color: #4682B4; font-style: italic;' # SteelBlue
-                        else:
-                            # Actual - Use empty string instead of inherit to be safe
-                            styles.at[cohort, col] = '' 
-            return styles
+        st.caption("Actuals are standard text. Predictions are **blue** (Styling temporarily disabled).")
 
-        # Ensure we identify numeric columns correctly (they are Ints in the DataFrame)
+        # Basic Format
         numeric_cols = [c for c in ltv_df.columns if isinstance(c, int)]
         format_dict = {c: "€{:.2f}" for c in numeric_cols}
+
+        # Use Standard Dataframe (No Styler) ensures compatibility
+        # We apply formatting to the data itself or use st.column_config if needed, 
+        # but to be safe we just format the values in a copy for display.
         
-        # Apply style
-        # DEBUG: Styler disabled to check if it causes the crash
-        # try:
-        #     styler = ltv_df.style.apply(style_actual_vs_predicted, axis=None).format(format_dict)
-        #     st.dataframe(styler, use_container_width=True)
-        # except Exception as e:
-        #     st.error(f"Styling Error: {e}")
-        #     st.dataframe(ltv_df, use_container_width=True)
-        
-        # Fallback simple display
-        st.dataframe(ltv_df.style.format(format_dict), use_container_width=True)
+        display_df = ltv_df.copy()
+        for c in numeric_cols:
+             display_df[c] = display_df[c].apply(lambda x: f"€{x:.2f}")
+
+        st.dataframe(display_df, use_container_width=True)
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
