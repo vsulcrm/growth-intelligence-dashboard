@@ -167,6 +167,8 @@ else:
         df['RFM_Group'] = df['R'] + "-" + df['F'] + "-" + df['M']
         return df
 
+    rfm_scored = calculate_rfm_scores(rfm_df)
+
     # Calculate metrics for the "M1 -> M2" visual (Migration/Flow)
     total_users_count = rfm_scored['user_id'].nunique()
     # Simple proxy for "Active": Frequency > 1 or Recency is '3' (Recent)
