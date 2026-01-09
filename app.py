@@ -341,12 +341,16 @@ elif view_mode == "💰 LTV Prediction":
         format_dict = {c: "€{:.2f}" for c in numeric_cols}
         
         # Apply style
-        try:
-            styler = ltv_df.style.apply(style_actual_vs_predicted, axis=None).format(format_dict)
-            st.dataframe(styler, use_container_width=True)
-        except Exception as e:
-            st.error(f"Styling Error: {e}")
-            st.dataframe(ltv_df, use_container_width=True)
+        # DEBUG: Styler disabled to check if it causes the crash
+        # try:
+        #     styler = ltv_df.style.apply(style_actual_vs_predicted, axis=None).format(format_dict)
+        #     st.dataframe(styler, use_container_width=True)
+        # except Exception as e:
+        #     st.error(f"Styling Error: {e}")
+        #     st.dataframe(ltv_df, use_container_width=True)
+        
+        # Fallback simple display
+        st.dataframe(ltv_df.style.format(format_dict), use_container_width=True)
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
