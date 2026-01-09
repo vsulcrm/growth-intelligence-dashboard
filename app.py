@@ -242,7 +242,7 @@ else:
             else:
                 m = 'C. Window Shopper' # Active but no spend
                 
-        return pd.Series([r, f, m])
+        return pd.Series({'Recency': r, 'Frequency': f, 'Monetary': m})
 
     # Apply the segmentation
     rfm_df[['Recency', 'Frequency', 'Monetary']] = rfm_df.apply(segment_behavior, axis=1)
