@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # --- 1. SETUP & THEME ---
-st.set_page_config(page_title="Growth Intelligence", layout="wide")
+st.set_page_config(page_title="Growth Intelligence Dashboard", layout="wide")
 
 st.sidebar.title("App Settings")
 chart_template = "plotly_dark"
@@ -49,7 +49,7 @@ df_users['cohort'] = df_users['acq_date'].dt.to_period('M').dt.to_timestamp()
 all_months = sorted(df_users['cohort'].unique())
 
 # --- 3. HEADER AREA (Logic & Sidebar) ---
-st.title("🚀 Product Growth Intelligence")
+st.title("Growth Intelligence Dashboard")
 
 # View Selector
 view_mode = st.radio("Select Analysis Focus:", ["📉 Retention Matrix", "👤 RFM Score Model", "💰 LTV Prediction"], horizontal=True)
@@ -271,15 +271,18 @@ elif view_mode == "💰 LTV Prediction":
                 # Is this Past (Actual) or Future (Predicted)?
                 check_date = c_date + pd.DateOffset(months=m_idx)
                 
+                val = None
+                
+                # Check for Actual Value first
                 if check_date <= sim_now:
-                    # Use Actual if available
-                    # ARPU DF has actuals
+                    # Try to fetch from Dataframe
                     if m_idx in arpu_df.columns:
-                        val = arpu_df.at[cohort, m_idx]
-                    else:
-                        val = m * m_idx + c
-                else:
-                    # Predicted
+                        raw_val = arpu_df.at[cohort, m_idx]
+                        if pd.notna(raw_val):
+                            val = raw_val
+                
+                # If no actual value (future OR missing actual), use Model
+                if val is None:
                     val = m * m_idx + c
                 
                 # Ensure non-negative
