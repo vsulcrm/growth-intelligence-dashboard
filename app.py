@@ -12,6 +12,25 @@ st.sidebar.title("App Settings")
 dark_mode = st.sidebar.toggle("Dark Mode", value=True)
 chart_template = "plotly_dark" if dark_mode else "plotly"
 
+if dark_mode:
+    st.markdown("""
+    <style>
+        .stApp {
+            background-color: #0E1117;
+            color: #FAFAFA;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <style>
+        .stApp {
+            background-color: #FFFFFF;
+            color: #000000;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
 # --- 2. DATA ENGINE (Realistic Simulation) ---
 @st.cache_data
 def generate_data():
