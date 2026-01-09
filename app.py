@@ -315,7 +315,8 @@ elif view_mode == "💰 LTV Prediction":
                     continue
                     
                 for col in df.columns:
-                    if isinstance(col, int): # 0..12
+                    # Column names are integers 0..12
+                    if isinstance(col, int): 
                         check_date = c_date + pd.DateOffset(months=col)
                         if check_date > sim_now_limit:
                             # Predicted
@@ -325,6 +326,7 @@ elif view_mode == "💰 LTV Prediction":
                             styles.at[cohort, col] = 'color: inherit;' 
             return styles
 
+        # Ensure we identify numeric columns correctly (they are Ints in the DataFrame)
         numeric_cols = [c for c in ltv_df.columns if isinstance(c, int)]
         format_dict = {c: "€{:.2f}" for c in numeric_cols}
         
@@ -332,6 +334,7 @@ elif view_mode == "💰 LTV Prediction":
         # Note: 'Formula' column is string, left unformatted
         styler = ltv_df.style.apply(style_actual_vs_predicted, axis=None).format(format_dict)
              
+        # Use st.dataframe with Column Config to ensure 0-12 are treated as columns not index
         st.dataframe(styler, use_container_width=True)
 
 # --- TAB: RFM SCORE MODEL ---
@@ -362,13 +365,13 @@ else:
     # --- 1. LOGIC: SNAPSHOT CALCULATION ---
     # function to calculate RFM table at a specific reference date
     def get_rfm_at_date(ref_date):
-        # Filter events up to ref_date
-        # We also need to respect the "Cohort Filter" (filtered_users is already filtered by cohort)
+        # User Request: "Month Selection should be used for total users not the app setings"
+        # We switch to using the FULL datasets (df_users, df_events) instead of filtered versions.
+        # This ignores the Sidebar Cohort Filter and Sidebar Date Slider.
         
-        # We need a fresh query for the specific date cutoff
-        # ref_date needs to be string for SQL
         ref_date_str = ref_date.strftime('%Y-%m-%d %H:%M:%S')
         
+        # We join df_users (All) with df_events (All, filtered by date <= ref_date)
         q = f"""
             SELECT 
                 u.user_id, 
@@ -377,8 +380,8 @@ else:
                 date_diff('day', MAX(CASE WHEN e.type = 'visit' THEN e.event_date END), timestamp '{ref_date_str}') as r_raw,
                 COUNT(CASE WHEN e.type = 'visit' THEN 1 END) as f_raw,
                 COALESCE(SUM(e.revenue), 0) as m_raw
-            FROM filtered_users u 
-            LEFT JOIN df_filtered_events e ON u.user_id = e.user_id AND e.event_date <= '{ref_date_str}'
+            FROM df_users u 
+            LEFT JOIN df_events e ON u.user_id = e.user_id AND e.event_date <= '{ref_date_str}'
             GROUP BY 1, 2, 3
         """
         df = duckdb.query(q).df()
