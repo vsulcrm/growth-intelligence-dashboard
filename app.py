@@ -51,6 +51,9 @@ all_months = sorted(df_users['cohort'].unique())
 # --- 3. HEADER AREA (Logic & Sidebar) ---
 st.title("Growth Intelligence Dashboard")
 
+# DEBUG: Trace Execution
+st.write("DEBUG: App Started")
+
 # View Selector
 view_mode = st.radio("Select Analysis Focus:", ["📉 Retention Matrix", "👤 RFM Score Model", "💰 LTV Prediction"], horizontal=True)
 
@@ -161,6 +164,7 @@ if view_mode == "📉 Retention Matrix":
 
 # --- TAB: LTV PREDICTION ---
 elif view_mode == "💰 LTV Prediction":
+    # st.write("DEBUG: LTV Tab Selected")
     st.header("LTV Prediction (Linear Projection)")
     st.caption("Projected Lifetime Value based on cumulative revenue per cohort.")
     
@@ -309,6 +313,7 @@ elif view_mode == "💰 LTV Prediction":
         
         # Display as Table (Simple)
         st.subheader("LTV Matrix (Actuals vs Predictions)")
+        # st.write("DEBUG: Matrix Calculated, formatting...")
         st.caption("Actuals are standard text. Predictions are **blue** (Styling temporarily disabled).")
 
         # Basic Format
