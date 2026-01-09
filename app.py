@@ -197,14 +197,20 @@ else:
         return df
 
     # Data Points
-    now_date = datetime(2026, 1, 8, 12, 0)
-    prev_date = now_date - timedelta(days=30)
+    # Dynamic "Reference Month" Selector
+    # Create list of available months from data (up to last month to allow +1 month projection)
+    # Use cohort months as proxies for "months available in data"
+    # End date of simulation is 2026-01-08.
     
-    rfm_now_raw = get_rfm_at_date(now_date)
-    rfm_prev_raw = get_rfm_at_date(prev_date)
+    # Generate list of First Days of months available in the dataset range
+    # Min Date: 2025-01-01, Max Date: 2026-01-08
+    # We want to select "Base Month" (Left). Right will be Base + 1 Month.
+    # So Base Month can be up to Dec 2025 (so next is Jan 2026).
     
-    rfm_now = calculate_rfm_scores(rfm_now_raw)
-    rfm_prev = calculate_rfm_scores(rfm_prev_raw)
+    sim_start = datetime(2025, 1, 1)
+    sim_end = datetime(2026, 1, 1) # Last full month start
+    available_months_dt = pd.date_range(sim_start, sim_end, freq='MS')
+    available_months_str = [d.strftime('%b %Y') for d in available_months_dt]
     
     # --- 2. LAYOUT & FILTERS ---
     
@@ -213,77 +219,117 @@ else:
     with col_filter:
         st.subheader("Filter Settings")
         
-        # A. Cohort Filter (Already handled by global, but we show it or allow subset)
-        # B. RFM Group Filter
-        all_groups = sorted(rfm_now['RFM_Group'].unique()) if not rfm_now.empty else []
-        selected_groups = st.multiselect("Filter RFM Groups:", options=all_groups, default=[])
+        # Reference Month Selector
+        # Default to 2nd to last (Nov 2025) so Dec 2025 is next, or similar.
+        default_idx = len(available_months_str) - 2 if len(available_months_str) > 1 else 0
+        selected_month_str = st.selectbox("Select Reference Month (Base):", options=available_months_str, index=default_idx)
         
-        # C. Cohort Subset (for Heatmap specifically)
-        available_cohorts = rfm_now.sort_values('sort_key')['joined_month'].unique()
+        # Calculate Dates
+        base_date = datetime.strptime(selected_month_str, '%b %Y')
+        next_date = base_date + pd.DateOffset(months=1)
+        
+        # For RFM snapshot calculation, we usually take the END of that month?
+        # User says "Month that is old" (Left) vs "Month that follows" (Right).
+        # Let's say we snapshot at the End of the selected months? OR Beginning?
+        # Usually RFM is "As of".
+        # Let's use End of Month for robustness, or +30 days. 
+        # Simpler: "As of 1st of Next Month" == Status of Previous Month?
+        # Let's set snapshot dates to the 1st of the displayed months to catch "State at that time".
+        
+        # Actually user wants "Month Left" -> "Month Right".
+        # Left: RFM State at end of Base Month?
+        # Right: RFM State at end of Next Month?
+        # Let's use:
+        # Prev Date = Base Month + 1 Month (Start) - 1 Day (End of Base)? 
+        # Let's stick to: Snapshot at precise points. 
+        # Snapshot 1 (Left): base_date + 30 days (approx end of month)
+        # Snapshot 2 (Right): next_date + 30 days
+        
+        # Let's just use the 1st of the Next Month as the cutoff for the "Month" status.
+        # e.g. Status of "Jan" is captured at Feb 1st. 
+        
+        date_left = base_date + pd.DateOffset(months=1) # Proxy for End of Base Month
+        date_right = next_date + pd.DateOffset(months=1) # Proxy for End of Next Month
+        
+        # A. Cohort Filter (Already handled by global)
+        
+        # Recalculate RFM based on dynamic dates
+        rfm_left_raw = get_rfm_at_date(date_left)
+        rfm_right_raw = get_rfm_at_date(date_right)
+        
+        rfm_left = calculate_rfm_scores(rfm_left_raw)
+        rfm_right = calculate_rfm_scores(rfm_right_raw)
+        
+        # B. RFM Group Filter - Single Select
+        all_groups = sorted(rfm_left['RFM_Group'].unique()) if not rfm_left.empty else []
+        if all_groups:
+             all_groups.insert(0, "All")
+        
+        selected_group = st.selectbox("Filter RFM Group:", options=all_groups, index=0)
+        
+        # C. Cohort Subset (for Heatmap)
+        available_cohorts = rfm_left.sort_values('sort_key')['joined_month'].unique()
         preselected = [c for c in available_cohorts if pd.to_datetime(c).strftime('%Y-%m') in [d.strftime('%Y-%m') for d in current_selection]]
         
-        # Note: If no RFM group selected, assume ALL
-        mask_now = pd.Series(True, index=rfm_now.index)
-        mask_prev = pd.Series(True, index=rfm_prev.index)
+        # Filter Logic
+        mask_left = pd.Series(True, index=rfm_left.index)
+        mask_right = pd.Series(True, index=rfm_right.index)
         
-        if selected_groups:
-            mask_now = mask_now & rfm_now['RFM_Group'].isin(selected_groups)
-            mask_prev = mask_prev & rfm_prev['RFM_Group'].isin(selected_groups)
+        if selected_group != "All":
+            mask_left = mask_left & (rfm_left['RFM_Group'] == selected_group)
+            mask_right = mask_right & (rfm_right['RFM_Group'] == selected_group)
             
-        filtered_now = rfm_now[mask_now]
-        filtered_prev = rfm_prev[mask_prev]
+        filtered_left = rfm_left[mask_left]
+        filtered_right = rfm_right[mask_right]
 
     # --- 3. TOP SUMMARY (MoM Flow) ---
     with col_content:
         st.markdown("### User Flow Summary (MoM Change)")
         
         # Counts
-        count_now = filtered_now['user_id'].nunique()
-        count_prev = filtered_prev['user_id'].nunique()
-        diff = count_now - count_prev
+        count_left = filtered_left['user_id'].nunique()
+        count_right = filtered_right['user_id'].nunique()
+        diff = count_right - count_left
         
         c1, c_arr, c2 = st.columns([2,1,2])
         
+        label_left = base_date.strftime('%B %Y')
+        label_right = next_date.strftime('%B %Y')
+        
         with c1:
-            st.metric(label=f"Users ({prev_date.strftime('%b %d')})", value=count_prev)
+            st.metric(label=f"Users ({label_left})", value=count_left)
             
         with c_arr:
              st.markdown(f"<h2 style='text-align: center; color: {'green' if diff >= 0 else 'red'};'>{'➜' if diff == 0 else ('↗' if diff > 0 else '↘')}</h2>", unsafe_allow_html=True)
         
         with c2:
-            st.metric(label=f"Users ({now_date.strftime('%b %d')})", value=count_now, delta=int(diff))
+            st.metric(label=f"Users ({label_right})", value=count_right, delta=int(diff))
             
         st.markdown("---")
 
         # --- 4. DATA PREP FOR HEATMAP (DELTA) ---
-        # We need counts per (F, R) bucket for Now and Prev, then subtract
+        # Heatmap shows GENERAL change (All Groups), but filtered by Cohort?
+        # User: "IN RFM Group Heatmap möchte ich im allgemeinen die Veränderung sehen"
+        # BUT: "Comparison of RFM combination should reflect the selected groups" -> This applies to the Bar Chart.
+        # Implication: Heatmap stays BROAD (General), Bar Chart becomes SPECIFIC (Filtered).
         
-        # Full aggregation (independent of RFM Group filter for the heatmap grid? 
-        # User said: "IN RFM Group Heatmap möchte ich im allgemeinen die Veränderung sehen... Die Heatmap zeigt den aktuellen Monat und soll mit + oder - Werten Zeigen"
-        # Usually Heatmap shows the whole landscape. If I filter to "1-1-1", the heatmap would only show one cell.
-        # User requirement: "Filter applicable to... Comparison of RFM combination should reflect selected groups". 
-        # It seems the Heatmap should probably show the *General* change to provide context, or be filtered?
-        # "Filter which group I want to select... User flow summary should show... In RFM Group Heatmap I want to see the change IN GENERAL"
-        # -> inferred: Heatmap shows ALL groups (Unfiltered by RFM Group), but Filter applies to Summary & Bar Chart.
+        # Recalculate "General" snapshot for Heatmap (ignoring RFM Group Filter, but respecting Cohort Filter via get_rfm_at_date)
+        # Actually... get_rfm_at_date relies on `filtered_users` which is controlled by sidebar. 
+        # So rfm_left/rfm_right ARE the general population for the selected cohorts.
         
-        # However, clarity: "RFM Group Heatmap möchte ich im allgemeinen die Veränderung sehen" -> "In General".
-        # So I will use the Full Data (filtered by Cohort, but NOT by RFM Group selector) for Heatmap.
+        hm_left = rfm_left.groupby(['F', 'R']).size().reset_index(name='count')
+        hm_right = rfm_right.groupby(['F', 'R']).size().reset_index(name='count')
         
-        hm_now = rfm_now.groupby(['F', 'R']).size().reset_index(name='count')
-        hm_prev = rfm_prev.groupby(['F', 'R']).size().reset_index(name='count')
-        
-        hm_merged = pd.merge(hm_now, hm_prev, on=['F', 'R'], how='outer', suffixes=('_now', '_prev')).fillna(0)
-        hm_merged['delta'] = hm_merged['count_now'] - hm_merged['count_prev']
+        hm_merged = pd.merge(hm_left, hm_right, on=['F', 'R'], how='outer', suffixes=('_left', '_right')).fillna(0)
+        hm_merged['delta'] = hm_merged['count_right'] - hm_merged['count_left']
         
         # Pivot for Heatmap
-        # Axes: Y = Recency (3-2-1), X = Frequency (1-2-3)
         heatmap_pivot = hm_merged.pivot(index='R', columns='F', values='delta').fillna(0)
         
-        # Sorting Index (Rows: R) -> 3, 2, 1 (Top to Bottom)
-        # Sorting Cols (Cols: F) -> 1, 2, 3 (Left to Right)
+        # Sorting
         heatmap_pivot = heatmap_pivot.reindex(index=["3", "2", "1"], columns=["1", "2", "3"])
         
-        st.subheader("RFM Delta Heatmap (MoM Change in User Count)")
+        st.subheader(f"RFM Delta Heatmap ({label_left} ➜ {label_right})")
         fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='+d', color_continuous_scale='RdBu', color_continuous_midpoint=0,
                                  labels=dict(x="Frequency (1=Low, 3=High)", y="Recency (3=Recent, 1=Old)", color="Change"),
                                  template=chart_template)
@@ -292,15 +338,21 @@ else:
         # --- 5. GROUP COMPARISON (BAR CHART) ---
         st.subheader("Comparison of Selected RFM Groups")
         
-        # This IS affected by the filter
-        if filtered_now.empty:
+        # Filtered Data (Respects Single Group Selection)
+        if filtered_left.empty:
             st.info("No users in selected groups.")
         else:
-            group_stats = filtered_now.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
+            # Show ONLY the selected group if specific, or all if "All"
+            # Bar chart likely expects to compare Segments. 
+            # If "All" selected -> Show all groups.
+            # If specific group selected -> Show just that group? Or maybe breakdown by Cohort?
+            # User: "Comparison of RFM combination should reflect the selected groups"
+            
+            group_stats = filtered_left.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
             group_stats = group_stats.sort_values(by="count", ascending=False)
             
             fig_groups = px.bar(group_stats, x="RFM_Group", y="count", color="joined_month", barmode="group",
-                                template=chart_template, title=f"Composition of Selected Groups ({now_date.strftime('%Y-%m-%d')})")
+                                template=chart_template, title=f"Composition ({label_left})")
             st.plotly_chart(fig_groups, use_container_width=True)
 
 # --- 5. FOOTER AREA ---
