@@ -212,41 +212,73 @@ elif view_mode == "💰 LTV Prediction":
         # Using numpy polyfit
         
         plot_data = [] # List of dicts for Plotly
+        formula_data = [] # List of dicts for Table
         
         sim_now = datetime(2026, 1, 8, 12, 0)
         
+        # 1. First Pass: Calculate Slopes for cohorts with enough data
+        slopes = []
+        
+        cohort_models = {}
+        
         for cohort in arpu_df.index:
-            # Get actual known data points (up to sim_now)
             row = arpu_df.loc[cohort]
-            
             c_date = datetime.strptime(cohort, '%b %Y')
             
             x_known = []
             y_known = []
             
             for m_idx in row.index:
-                 # Check if this month index is in the past
                  if c_date + pd.DateOffset(months=int(m_idx)) <= sim_now:
-                     valid_val = row[m_idx] # This is cumulative
+                     valid_val = row[m_idx]
                      x_known.append(int(m_idx))
                      y_known.append(valid_val)
-                     
-                     plot_data.append({'Cohort': cohort, 'Month': int(m_idx), 'ARPU': valid_val, 'Type': 'Actual'})
             
-            # Predict forward up to Month 12 (or 24)
             if len(x_known) > 1:
-                coef = np.polyfit(x_known, y_known, 1) # Linear fit
-                poly1d_fn = np.poly1d(coef)
-                
-                # Project from last known point + 1 up to Month 12
-                start_proj = x_known[-1] + 1
-                for m_proj in range(start_proj, 13):
-                    pred_val = poly1d_fn(m_proj)
-                    plot_data.append({'Cohort': cohort, 'Month': m_proj, 'ARPU': pred_val, 'Type': 'Projected'})
-            elif len(x_known) == 1:
-                # Flat projection not ideal but Linear requires >1 point. Just skip or project constant?
-                # Skip
-                pass
+                coef = np.polyfit(x_known, y_known, 1) # [slope, intercept]
+                slopes.append(coef[0])
+                cohort_models[cohort] = {'m': coef[0], 'c': coef[1], 'x_known': x_known, 'y_known': y_known}
+            else:
+                cohort_models[cohort] = {'m': None, 'c': None, 'x_known': x_known, 'y_known': y_known}
+
+        # Avg Slope Fallback
+        avg_slope = np.mean(slopes) if slopes else 0
+        
+        # 2. Second Pass: Generate Projections and Formulas
+        for cohort in arpu_df.index:
+            model = cohort_models[cohort]
+            x_known = model['x_known']
+            y_known = model['y_known']
+            
+            # Plot Actuals
+            for i, x in enumerate(x_known):
+                plot_data.append({'Cohort': cohort, 'Month': x, 'ARPU': y_known[i], 'Type': 'Actual'})
+            
+            # Determine Coefs to use
+            if model['m'] is not None:
+                m = model['m']
+                c = model['c']
+                formula_str = f"ARPU = {m:.2f} * Month + {c:.2f}"
+            else:
+                # Fallback
+                m = avg_slope
+                # Calculate 'c' such that the line passes through the LAST known point
+                # y = mx + c -> c = y - mx
+                if x_known:
+                    last_x = x_known[-1]
+                    last_y = y_known[-1]
+                    c = last_y - (m * last_x)
+                else:
+                    c = 0 # No data at all?
+                formula_str = f"ARPU = {m:.2f} * Month + {c:.2f} (Avg Slope Fallback)"
+            
+            formula_data.append({'Cohort': cohort, 'Formula': formula_str, 'Proj. Month 12': m*12 + c})
+
+            # Project forward
+            start_proj = x_known[-1] + 1 if x_known else 0
+            for m_proj in range(start_proj, 13):
+                pred_val = m * m_proj + c
+                plot_data.append({'Cohort': cohort, 'Month': m_proj, 'ARPU': pred_val, 'Type': 'Projected'})
                 
         df_plot = pd.DataFrame(plot_data)
         
@@ -254,7 +286,8 @@ elif view_mode == "💰 LTV Prediction":
                           title="LTV Progression (Actual vs Cumulative Projected)", template=chart_template)
         st.plotly_chart(fig_ltv, use_container_width=True)
         
-        st.info("Dashed lines indicate linear projection based on existing months.")
+        st.subheader("Regression Models")
+        st.dataframe(pd.DataFrame(formula_data).set_index("Cohort"))
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
@@ -348,7 +381,6 @@ else:
 
     # Data Points
     # Dynamic "Reference Month" Selector
-
     # Create list of available months from data (up to last month to allow +1 month projection)
     # Use cohort months as proxies for "months available in data"
     # End date of simulation is 2026-01-08.
@@ -364,67 +396,70 @@ else:
     available_months_str = [d.strftime('%b %Y') for d in available_months_dt]
     
     # --- 2. LAYOUT & FILTERS ---
+    st.markdown("### Month Selection")
     
-    col_filter, col_content = st.columns([1, 3])
+    # Move Reference Month Selector to Top 
+    # Default to last available month
+    default_idx = len(available_months_str) - 1
+    selected_month_str = st.selectbox("Select Analysis Month (Current):", options=available_months_str, index=default_idx)
     
-    with col_filter:
-        st.subheader("Filter Settings")
-        
-        # Reference Month Selector
-        # User Request: Select "Current" (Right) -> Show "Prior" (Left)
-        # Default to last available month
-        default_idx = len(available_months_str) - 1
-        selected_month_str = st.selectbox("Select Analysis Month (Current):", options=available_months_str, index=default_idx)
-        
-        # Calculate Dates
-        # Selected = Right Side (Current Month Status)
-        # Snapshot for Right: End of Selected Month (or 1st of Next Month)
-        current_month_date = datetime.strptime(selected_month_str, '%b %Y') 
-        
-        # Left Side = Previous Month 
-        prev_month_date = current_month_date - pd.DateOffset(months=1)
-        
-        # Snapshots (Proxy: 1st of Month After)
-        # Status of "May" is known at "June 1st"
-        date_right = current_month_date + pd.DateOffset(months=1) # End of Current (Selected) Month
-        date_left = current_month_date # End of Previous Month ( == Start of Current Month)
-        
-        # A. Cohort Filter (Already handled by global)
-        
-        # Recalculate RFM based on dynamic dates
-        rfm_left_raw = get_rfm_at_date(date_left)
-        rfm_right_raw = get_rfm_at_date(date_right)
-        
-        rfm_left = calculate_rfm_scores(rfm_left_raw)
-        rfm_right = calculate_rfm_scores(rfm_right_raw)
-        
-        # B. RFM Group Filter - Single Select
-        all_groups = sorted(rfm_right['RFM_Group'].unique()) if not rfm_right.empty else []
-        if all_groups:
-             all_groups.insert(0, "All")
-        
-        selected_group = st.selectbox("Filter RFM Group:", options=all_groups, index=0)
-        
-        # C. Cohort Subset (local filter)
-        available_cohorts = rfm_right.sort_values('sort_key')['joined_month'].unique()
-        # Default: All available in the gathered data (which is already subset by sidebar)
-        selected_cohorts = st.multiselect("Filter Specific Cohorts:", options=available_cohorts, default=available_cohorts)
-        
-        # Filter Logic
-        mask_left = rfm_left['joined_month'].isin(selected_cohorts)
-        mask_right = rfm_right['joined_month'].isin(selected_cohorts)
-        
-        if selected_group != "All":
-            mask_left = mask_left & (rfm_left['RFM_Group'] == selected_group)
-            mask_right = mask_right & (rfm_right['RFM_Group'] == selected_group)
-            
-        filtered_left = rfm_left[mask_left]
-        filtered_right = rfm_right[mask_right]
-
+    # Calculate Dates
+    # Selected = Right Side (Current Month Status)
+    # Snapshot for Right: End of Selected Month (or 1st of Next Month)
+    current_month_date = datetime.strptime(selected_month_str, '%b %Y') 
+    
+    # Left Side = Previous Month 
+    prev_month_date = current_month_date - pd.DateOffset(months=1)
+    
+    # Snapshots (Proxy: 1st of Month After)
+    # Status of "May" is known at "June 1st"
+    date_right = current_month_date + pd.DateOffset(months=1) # End of Current (Selected) Month
+    date_left = current_month_date # End of Previous Month ( == Start of Current Month)
+    
+    # Recalculate RFM based on dynamic dates
+    rfm_left_raw = get_rfm_at_date(date_left)
+    rfm_right_raw = get_rfm_at_date(date_right)
+    
+    rfm_left = calculate_rfm_scores(rfm_left_raw)
+    rfm_right = calculate_rfm_scores(rfm_right_raw)
+    
     # --- 3. TOP SUMMARY (MoM Flow) ---
-    with col_content:
-        st.markdown("### Month-Over-Month Flow")
+       
+    st.markdown("### Month-Over-Month Flow")
+    
+    # Get available RFM groups for filter logic (but filter is later)
+    all_groups = sorted(rfm_right['RFM_Group'].unique()) if not rfm_right.empty else []
+    if all_groups:
+         all_groups.insert(0, "All")
+    
+    # For summary, we need the group filter "available" but perhaps we place it here?
+    # User said "Filters next to each section". Summary is a section. 
+    # Let's put Group Filter next to Summary? Or Next to Bar Chart?
+    # "User flow summary should show how many customers more or less in the SELECTED GROUP"
+    # So Group Filter affects Summary, Heatmap (No?), and Bar Chart.
+    # If it affects Summary, it should probably be above Summary or Next to it.
+    
+    # Let's put Group Filter at the top with Month Selector? Or Next to Summary?
+    # Let's put Group Filter next to Summary.
+    
+    c_sum, c_filt = st.columns([3, 1])
+    
+    with c_filt:
+         st.subheader("Filter")
+         selected_group = st.selectbox("Filter RFM Group:", options=all_groups, index=0)
+    
+    # Filter Logic
+    mask_left = pd.Series(True, index=rfm_left.index)
+    mask_right = pd.Series(True, index=rfm_right.index)
+    
+    if selected_group != "All":
+        mask_left = mask_left & (rfm_left['RFM_Group'] == selected_group)
+        mask_right = mask_right & (rfm_right['RFM_Group'] == selected_group)
         
+    filtered_left = rfm_left[mask_left]
+    filtered_right = rfm_right[mask_right]
+    
+    with c_sum:
         # Counts
         count_left = filtered_left['user_id'].nunique()
         count_right = filtered_right['user_id'].nunique()
@@ -444,20 +479,29 @@ else:
         with c2:
             st.metric(label=f"Users ({label_right})", value=count_right, delta=int(diff))
             
-        st.markdown("---")
+    st.markdown("---")
 
-        # --- 4. DATA PREP FOR HEATMAP (DELTA) ---
-        # Heatmap shows GENERAL change (All Groups), but filtered by Cohort?
-        # User: "IN RFM Group Heatmap möchte ich im allgemeinen die Veränderung sehen"
-        # BUT: "Comparison of RFM combination should reflect the selected groups" -> This applies to the Bar Chart.
-        # Implication: Heatmap stays BROAD (General), Bar Chart becomes SPECIFIC (Filtered).
+    # --- 4. DATA PREP FOR HEATMAP (DELTA) ---
+    st.subheader(f"RFM Delta Heatmap ({label_left} ➜ {label_right})")
+    
+    c_heat, c_heat_filt = st.columns([3, 1])
+    
+    with c_heat_filt:
+        st.subheader("Heatmap Filter")
+        available_cohorts = rfm_right.sort_values('sort_key')['joined_month'].unique()
+        selected_cohorts = st.multiselect("Specific Cohorts:", options=available_cohorts, default=available_cohorts)
         
-        # Recalculate "General" snapshot for Heatmap (ignoring RFM Group Filter, but respecting Cohort Filter via get_rfm_at_date)
-        # Actually... get_rfm_at_date relies on `filtered_users` which is controlled by sidebar. 
-        # So rfm_left/rfm_right ARE the general population for the selected cohorts.
+    with c_heat:
+        # Heatmap Filter Logic (Cohort Only, ignore RFM Group filter for general view?)
+        # User said "In general". But if we filtering, maybe we should respect it? 
+        # "Heatmap shows current month... with + or - values... in General".
+        # Assume Heatmap is "General Overview" thus ONLY Cohort Filter applies.
         
-        hm_left = rfm_left.groupby(['F', 'R']).size().reset_index(name='count')
-        hm_right = rfm_right.groupby(['F', 'R']).size().reset_index(name='count')
+        m_left_c = rfm_left['joined_month'].isin(selected_cohorts)
+        m_right_c = rfm_right['joined_month'].isin(selected_cohorts)
+        
+        hm_left = rfm_left[m_left_c].groupby(['F', 'R']).size().reset_index(name='count')
+        hm_right = rfm_right[m_right_c].groupby(['F', 'R']).size().reset_index(name='count')
         
         hm_merged = pd.merge(hm_left, hm_right, on=['F', 'R'], how='outer', suffixes=('_left', '_right')).fillna(0)
         hm_merged['delta'] = hm_merged['count_right'] - hm_merged['count_left']
@@ -468,31 +512,30 @@ else:
         # Sorting
         heatmap_pivot = heatmap_pivot.reindex(index=["3", "2", "1"], columns=["1", "2", "3"])
         
-        st.subheader(f"RFM Delta Heatmap ({label_left} ➜ {label_right})")
         fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='+d', color_continuous_scale='RdBu', color_continuous_midpoint=0,
                                  labels=dict(x="Frequency (1=Low, 3=High)", y="Recency (3=Recent, 1=Old)", color="Change"),
                                  template=chart_template)
         st.plotly_chart(fig_rfm_heat, use_container_width=True)
 
-        # --- 5. GROUP COMPARISON (BAR CHART) ---
-        st.subheader("Comparison of Selected RFM Groups")
+    # --- 5. GROUP COMPARISON (BAR CHART) ---
+    st.subheader("Comparison of Selected RFM Groups")
+    
+    # Recalculate filtered set for Bar Chart based on Cohort Filter + RFM Group Filter (if selected?)
+    # "Comparison of RFM combination should reflect the selected groups" -> Yes, Group Filter applies.
+    # What about Cohort Filter? Should probably also apply for consistency.
+    
+    final_mask_right = mask_right & rfm_right['joined_month'].isin(selected_cohorts)
+    bar_data = rfm_right[final_mask_right]
+    
+    if bar_data.empty:
+        st.info("No users in selected groups.")
+    else:
+        group_stats = bar_data.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
+        group_stats = group_stats.sort_values(by="count", ascending=False)
         
-        # Filtered Data (Respects Single Group Selection)
-        if filtered_left.empty:
-            st.info("No users in selected groups.")
-        else:
-            # Show ONLY the selected group if specific, or all if "All"
-            # Bar chart likely expects to compare Segments. 
-            # If "All" selected -> Show all groups.
-            # If specific group selected -> Show just that group? Or maybe breakdown by Cohort?
-            # User: "Comparison of RFM combination should reflect the selected groups"
-            
-            group_stats = filtered_left.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
-            group_stats = group_stats.sort_values(by="count", ascending=False)
-            
-            fig_groups = px.bar(group_stats, x="RFM_Group", y="count", color="joined_month", barmode="group",
-                                template=chart_template, title=f"Composition ({label_left})")
-            st.plotly_chart(fig_groups, use_container_width=True)
+        fig_groups = px.bar(group_stats, x="RFM_Group", y="count", color="joined_month", barmode="group",
+                            template=chart_template, title=f"Composition ({label_right})")
+        st.plotly_chart(fig_groups, use_container_width=True)
 
 # --- 5. FOOTER AREA ---
 st.markdown("---")
