@@ -252,6 +252,7 @@ elif view_mode == "💰 LTV Prediction":
             if model['m'] is not None:
                 m = model['m']
                 c = model['c']
+                formula_str = f"ARPU = {m:.2f} * Month + {c:.2f}"
             else:
                 m = avg_slope
                 if model['x_known']:
@@ -260,6 +261,7 @@ elif view_mode == "💰 LTV Prediction":
                     c = last_y - (m * last_x)
                 else:
                     c = 0 
+                formula_str = f"ARPU = {m:.2f} * Month + {c:.2f} (Avg Slope Fallback)" 
             
             # Generate row for 0 to 12
             row_dict = {'Cohort': cohort}
