@@ -1,4 +1,5 @@
 # Growth Intelligence Dashboard
+Link: https://growth-intelligence-dashboard-4hzzl8ygntxbpigxgmoipy.streamlit.app
 
 A streamlined Streamlit application for analyzing usage retention, calculating Lifetime Value (LTV), and performing RFM (Recency, Frequency, Monetary) segmentation using DuckDB and Plotly.
 
