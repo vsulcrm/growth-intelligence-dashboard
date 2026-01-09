@@ -52,7 +52,7 @@ all_months = sorted(df_users['cohort'].unique())
 st.title("🚀 Product Growth Intelligence")
 
 # View Selector
-view_mode = st.radio("Select Analysis Focus:", ["📉 Retention Matrix", "👤 RFM Score Model"], horizontal=True)
+view_mode = st.radio("Select Analysis Focus:", ["📉 Retention Matrix", "👤 RFM Score Model", "💰 LTV Prediction"], horizontal=True)
 
 st.sidebar.subheader("Filter: User Cohorts (Join Date)")
 
@@ -125,25 +125,162 @@ if view_mode == "📉 Retention Matrix":
         pivot = pivot.reindex(ordered_labels)
         
         # Normalization (Month 0 = 100%)
-        retention_matrix = (pivot.divide(pivot.iloc[:, 0], axis=0) * 100).clip(upper=100.0)
+        # Logic to mask FUTURE months as NaN
+        # Current Real Time: 2026-01-08 (Simulation "Now")
+        # For each cohort, calculate max reachable month index
+        sim_now = datetime(2026, 1, 8, 12, 0)
         
-        fig_heat = px.imshow(retention_matrix, text_auto='.1f', color_continuous_scale='RdYlGn',
+        retention_matrix_pct = (pivot.divide(pivot.iloc[:, 0], axis=0) * 100).clip(upper=100.0)
+        
+        # Mask future cells
+        # Cohort Date + Month Index * 30 Days > sim_now? -> NaN
+        # Simpler: Iterate and mask
+        for cohort_name in retention_matrix_pct.index:
+            # Parse cohort date from index (e.g. "Jan 2025")
+            c_date = datetime.strptime(cohort_name, '%b %Y')
+            for col_m in retention_matrix_pct.columns:
+                # Approx month date
+                m_date = c_date + pd.DateOffset(months=int(col_m))
+                if m_date > sim_now:
+                     retention_matrix_pct.loc[cohort_name, col_m] = None
+
+        fig_heat = px.imshow(retention_matrix_pct, text_auto='.1f', color_continuous_scale='RdYlGn',
                              labels=dict(x="Months Since Acquisition", y="Cohort", color="Retention %"),
                              aspect="auto", template=chart_template)
         st.plotly_chart(fig_heat, use_container_width=True)
 
         st.subheader("Retention Milestones (M1, M3, M6, M12)")
-        sel_c = st.selectbox("Cohort for KPI Check:", options=retention_matrix.index)
-        kpi = retention_matrix.loc[sel_c]
+        sel_c = st.selectbox("Cohort for KPI Check:", options=retention_matrix_pct.index)
+        kpi = retention_matrix_pct.loc[sel_c]
         c1, c2, c3, c4 = st.columns(4)
         for i, m in enumerate([1, 3, 6, 12]):
-            val = kpi[m] if m in kpi else 0
-            [c1, c2, c3, c4][i].metric(f"Month {m}", f"{val:.1f}%")
+            val = kpi[m] if (m in kpi and pd.notna(kpi[m])) else 0
+            # If NaN (Future), show N/A
+            disp_val = f"{val:.1f}%" if (m in kpi and pd.notna(kpi[m])) else "N/A"
+            [c1, c2, c3, c4][i].metric(f"Month {m}", disp_val)
+
+# --- TAB: LTV PREDICTION ---
+elif view_mode == "💰 LTV Prediction":
+    st.header("LTV Prediction (Linear Projection)")
+    st.caption("Projected Lifetime Value based on cumulative revenue per cohort.")
+    
+    # 1. Calc Revenue per Cohort per Month
+    ltv_query = """
+        WITH uc AS (SELECT user_id, DATE_TRUNC('month', acq_date) as c_month FROM filtered_users),
+        rev AS (
+            SELECT e.user_id, uc.c_month,
+            (EXTRACT(year FROM e.event_date) - EXTRACT(year FROM uc.c_month)) * 12 +
+            (EXTRACT(month FROM e.event_date) - EXTRACT(month FROM uc.c_month)) as m_num,
+            e.revenue
+            FROM df_filtered_events e JOIN uc ON e.user_id = uc.user_id
+            WHERE e.type = 'purchase'
+        )
+        SELECT strftime(c_month, '%b %Y') as cohort,
+               uc.c_month,
+               m_num, 
+               SUM(revenue) as total_rev
+        FROM rev JOIN uc ON rev.user_id = uc.user_id -- redundant join but safe
+        WHERE m_num BETWEEN 0 AND 24 
+        GROUP BY 1, 2, 3
+    """
+    # Note: Need total USERS per cohort to normalize ARPU
+    cohort_sizes = df_users.groupby('cohort').size().reset_index(name='size')
+    cohort_sizes['cohort_label'] = cohort_sizes['cohort'].dt.strftime('%b %Y')
+    
+    rev_data = duckdb.query(ltv_query).df()
+    
+    if rev_data.empty:
+        st.warning("No revenue data available.")
+    else: 
+        # Calculate Cumulative ARPU
+        rev_pivot = rev_data.pivot(index='cohort', columns='m_num', values='total_rev').fillna(0)
+        # Ensure correct order
+        rev_pivot = rev_pivot.reindex([d.strftime('%b %Y') for d in sorted(pd.to_datetime(rev_pivot.index, format='%b %Y'))])
+        
+        cum_rev = rev_pivot.cumsum(axis=1)
+        
+        # Divide by cohort size
+        arpu_df = cum_rev.copy()
+        
+        for c in arpu_df.index:
+            size_row = cohort_sizes[cohort_sizes['cohort_label'] == c]
+            if not size_row.empty:
+                size = size_row.iloc[0]['size']
+                arpu_df.loc[c] = arpu_df.loc[c] / size
+        
+        # Projection Logic (Simple Linear Regression per cohort)
+        # Using numpy polyfit
+        
+        plot_data = [] # List of dicts for Plotly
+        
+        sim_now = datetime(2026, 1, 8, 12, 0)
+        
+        for cohort in arpu_df.index:
+            # Get actual known data points (up to sim_now)
+            row = arpu_df.loc[cohort]
+            
+            c_date = datetime.strptime(cohort, '%b %Y')
+            
+            x_known = []
+            y_known = []
+            
+            for m_idx in row.index:
+                 # Check if this month index is in the past
+                 if c_date + pd.DateOffset(months=int(m_idx)) <= sim_now:
+                     valid_val = row[m_idx] # This is cumulative
+                     x_known.append(int(m_idx))
+                     y_known.append(valid_val)
+                     
+                     plot_data.append({'Cohort': cohort, 'Month': int(m_idx), 'ARPU': valid_val, 'Type': 'Actual'})
+            
+            # Predict forward up to Month 12 (or 24)
+            if len(x_known) > 1:
+                coef = np.polyfit(x_known, y_known, 1) # Linear fit
+                poly1d_fn = np.poly1d(coef)
+                
+                # Project from last known point + 1 up to Month 12
+                start_proj = x_known[-1] + 1
+                for m_proj in range(start_proj, 13):
+                    pred_val = poly1d_fn(m_proj)
+                    plot_data.append({'Cohort': cohort, 'Month': m_proj, 'ARPU': pred_val, 'Type': 'Projected'})
+            elif len(x_known) == 1:
+                # Flat projection not ideal but Linear requires >1 point. Just skip or project constant?
+                # Skip
+                pass
+                
+        df_plot = pd.DataFrame(plot_data)
+        
+        fig_ltv = px.line(df_plot, x="Month", y="ARPU", color="Cohort", line_dash="Type", 
+                          title="LTV Progression (Actual vs Cumulative Projected)", template=chart_template)
+        st.plotly_chart(fig_ltv, use_container_width=True)
+        
+        st.info("Dashed lines indicate linear projection based on existing months.")
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
-    st.header("RFM Score Model Comparison (1-3 Tertiles)")
+    st.header("RFM Score Model Comparison")
+    st.caption("Segments based on: **Recency** (Tertiles), **Frequency** (Custom Bins), **Monetary** (Spending Tier).")
     
+    # Legend
+    with st.expander("ℹ️  RFM Logic & Definitions", expanded=False):
+        st.markdown("""
+        **Recency (R)**: 
+        - **3**: Recent (Top 33%)
+        - **2**: Middle (Mid 33%)
+        - **1**: Old (Bottom 33%) (Note: Based on relative distribution)
+
+        **Frequency (F)**: 
+        - **3**: High (Daily+, ≥ 20 visits)
+        - **2**: Medium (Weekly, 4-19 visits)
+        - **1**: Low (Monthly, 1-3 visits)
+
+        **Monetary (M)**: 
+        - **3**: High (> 100€)
+        - **2**: Medium (1 - 100€)
+        - **1**: Small (0.01 - 1€)
+        - **0**: Non-Paying (0€)
+        """)
+
     # --- 1. LOGIC: SNAPSHOT CALCULATION ---
     # function to calculate RFM table at a specific reference date
     def get_rfm_at_date(ref_date):
@@ -169,12 +306,7 @@ else:
         df = duckdb.query(q).df()
         return df
 
-    # Scoring Logic (1-3 Tertiles) - Shared thresholds or recalculate per snapshot?
-    # Usually standard is to recalibrate, but for MoM comparison, keeping thresholds constant OR recalibrating
-    # is a choice. Let's recalibrate each time to see relative movement, OR stick to fixed.
-    # For simplicity/robustness: Recalculate tertiles on the *current* dataset, then apply to past?
-    # Actually, simpler: Just calculate scores independently for Now and Prev to see "Relative Standing" shifts.
-    
+    # Scoring Logic (Custom Bins)
     def calculate_rfm_scores(df):
         if df.empty: return df
         df = df.copy()
@@ -182,22 +314,41 @@ else:
         # For simplicity, if r_raw is NaN (no visits), set to large number
         df['r_raw'] = df['r_raw'].fillna(9999)
         
-        # 3 buckets
+        # R: Tertiles (Relative) - Staying with 3-2-1 logic
         try:
-            df['R'] = pd.qcut(df['r_raw'], 3, labels=["3", "2", "1"], duplicates='drop').astype(str) # 3 is best (lowest recency)
-            df['F'] = pd.qcut(df['f_raw'].rank(method='first'), 3, labels=["1", "2", "3"]).astype(str)
-            df['M'] = pd.qcut(df['m_raw'].rank(method='first'), 3, labels=["1", "2", "3"]).astype(str)
+             # Invert QCut labels for Recency so 3 is "Low Recency Value" (Recent)
+             # But pd.qcut sorts values. Low raw value = Recent.
+             # qcut labels are applied to bins in increasing order. 
+             # Bin 1 (Low values, Recent) -> Label "3"
+             # Bin 3 (High values, Old) -> Label "1"
+             df['R'] = pd.qcut(df['r_raw'], 3, labels=["3", "2", "1"], duplicates='drop').astype(str)
         except ValueError:
-            # Fallback if too little data
             df['R'] = "1"
-            df['F'] = "1"
-            df['M'] = "1"
+
+        # F: Custom Bins (1-3 visits=1, 4-19=2, 20+=3)
+        # Bins: [-1 (include 0?), 0.9, 3, 19, 99999]
+        # Wait, user said "Monthly (1), Weekly (4), Daily".
+        # Let's map: 0=0, 1-3=1 (Low), 4-19=2 (Med), 20+=3 (High)
+        # Actually User said: F (hourly, daily, weekly, monthly). 
+        # Impl: 1=Low, 2=Med, 3=High.
+        f_bins = [-1, 0, 3, 19, 999999]
+        f_labels = ["0", "1", "2", "3"] # 0 for no visits? (Though usually active have visits)
+        df['F'] = pd.cut(df['f_raw'], bins=f_bins, labels=f_labels).astype(str)
+        
+        # M: Value Bins (0, 0.01-1, 1-100, >100)
+        # Bins: [-1, 0, 1, 100, 999999]
+        # Labels: 0 (0), 1 (0-1), 2 (1-100), 3 (>100)
+        # Note: 0.0 value falls in [-1, 0]. 0.01 falls in (0, 1].
+        m_bins = [-1, 0, 1, 100, 999999]
+        m_labels = ["0", "1", "2", "3"]
+        df['M'] = pd.cut(df['m_raw'], bins=m_bins, labels=m_labels).astype(str)
             
         df['RFM_Group'] = df['R'] + "-" + df['F'] + "-" + df['M']
         return df
 
     # Data Points
     # Dynamic "Reference Month" Selector
+
     # Create list of available months from data (up to last month to allow +1 month projection)
     # Use cohort months as proxies for "months available in data"
     # End date of simulation is 2026-01-08.
