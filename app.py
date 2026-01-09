@@ -144,98 +144,165 @@ if view_mode == "📉 Retention Matrix":
 else: 
     st.header("RFM Score Model Comparison (1-3 Tertiles)")
     
-    rfm_query = """
-        SELECT 
-            u.user_id, 
-            strftime(DATE_TRUNC('month', u.acq_date), '%b %Y') as joined_month,
-            strftime(DATE_TRUNC('month', u.acq_date), '%Y-%m') as sort_key,
-            date_diff('day', MAX(CASE WHEN e.type = 'visit' THEN e.event_date END), timestamp '2026-01-08 12:00:00') as r_raw,
-            COUNT(CASE WHEN e.type = 'visit' THEN 1 END) as f_raw,
-            COALESCE(SUM(e.revenue), 0) as m_raw
-        FROM filtered_users u 
-        LEFT JOIN df_filtered_events e ON u.user_id = e.user_id 
-        GROUP BY 1, 2, 3
-    """
-    rfm_df = duckdb.query(rfm_query).df()
+    # --- 1. LOGIC: SNAPSHOT CALCULATION ---
+    # function to calculate RFM table at a specific reference date
+    def get_rfm_at_date(ref_date):
+        # Filter events up to ref_date
+        # We also need to respect the "Cohort Filter" (filtered_users is already filtered by cohort)
+        
+        # We need a fresh query for the specific date cutoff
+        # ref_date needs to be string for SQL
+        ref_date_str = ref_date.strftime('%Y-%m-%d %H:%M:%S')
+        
+        q = f"""
+            SELECT 
+                u.user_id, 
+                strftime(DATE_TRUNC('month', u.acq_date), '%b %Y') as joined_month,
+                strftime(DATE_TRUNC('month', u.acq_date), '%Y-%m') as sort_key,
+                date_diff('day', MAX(CASE WHEN e.type = 'visit' THEN e.event_date END), timestamp '{ref_date_str}') as r_raw,
+                COUNT(CASE WHEN e.type = 'visit' THEN 1 END) as f_raw,
+                COALESCE(SUM(e.revenue), 0) as m_raw
+            FROM filtered_users u 
+            LEFT JOIN df_filtered_events e ON u.user_id = e.user_id AND e.event_date <= '{ref_date_str}'
+            GROUP BY 1, 2, 3
+        """
+        df = duckdb.query(q).df()
+        return df
 
-    # Scoring Logic (1-3 Tertiles)
+    # Scoring Logic (1-3 Tertiles) - Shared thresholds or recalculate per snapshot?
+    # Usually standard is to recalibrate, but for MoM comparison, keeping thresholds constant OR recalibrating
+    # is a choice. Let's recalibrate each time to see relative movement, OR stick to fixed.
+    # For simplicity/robustness: Recalculate tertiles on the *current* dataset, then apply to past?
+    # Actually, simpler: Just calculate scores independently for Now and Prev to see "Relative Standing" shifts.
+    
     def calculate_rfm_scores(df):
+        if df.empty: return df
         df = df.copy()
-        df['R'] = pd.qcut(df['r_raw'], 3, labels=["3", "2", "1"]).astype(str)
-        df['F'] = pd.qcut(df['f_raw'].rank(method='first'), 3, labels=["1", "2", "3"]).astype(str)
-        df['M'] = pd.qcut(df['m_raw'].rank(method='first'), 3, labels=["1", "2", "3"]).astype(str)
+        # Handle NA for users with no events (Recency usually NaN) -> Fill with max? 
+        # For simplicity, if r_raw is NaN (no visits), set to large number
+        df['r_raw'] = df['r_raw'].fillna(9999)
+        
+        # 3 buckets
+        try:
+            df['R'] = pd.qcut(df['r_raw'], 3, labels=["3", "2", "1"], duplicates='drop').astype(str) # 3 is best (lowest recency)
+            df['F'] = pd.qcut(df['f_raw'].rank(method='first'), 3, labels=["1", "2", "3"]).astype(str)
+            df['M'] = pd.qcut(df['m_raw'].rank(method='first'), 3, labels=["1", "2", "3"]).astype(str)
+        except ValueError:
+            # Fallback if too little data
+            df['R'] = "1"
+            df['F'] = "1"
+            df['M'] = "1"
+            
         df['RFM_Group'] = df['R'] + "-" + df['F'] + "-" + df['M']
         return df
 
-    rfm_scored = calculate_rfm_scores(rfm_df)
-
-    # Calculate metrics for the "M1 -> M2" visual (Migration/Flow)
-    total_users_count = rfm_scored['user_id'].nunique()
-    # Simple proxy for "Active": Frequency > 1 or Recency is '3' (Recent)
-    # Let's use Recency Score = '3' (which is the top tertile, i.e., most recent)
-    active_recent_users = rfm_scored[rfm_scored['R'] == '3']['user_id'].nunique()
-
-    # --- TOP SECTION: M1 -> M2 (Summary Flow) ---
-    st.markdown("### User Flow Summary")
-    c_m1, c_arrow, c_m2 = st.columns([2, 1, 2])
+    # Data Points
+    now_date = datetime(2026, 1, 8, 12, 0)
+    prev_date = now_date - timedelta(days=30)
     
-    with c_m1:
-        st.info(f"**Total Tracked Users (M1)**\n\n# {total_users_count}")
+    rfm_now_raw = get_rfm_at_date(now_date)
+    rfm_prev_raw = get_rfm_at_date(prev_date)
     
-    with c_arrow:
-        st.markdown("<h1 style='text-align: center; color: gray;'>➜</h1>", unsafe_allow_html=True)
-        
-    with c_m2:
-        st.success(f"**High Recency Users (M2)**\n\n# {active_recent_users}")
-
-    st.markdown("---")
-
-    # --- MAIN SPLIT: FILTER (LEFT) | RFM CONTENT (RIGHT) ---
+    rfm_now = calculate_rfm_scores(rfm_now_raw)
+    rfm_prev = calculate_rfm_scores(rfm_prev_raw)
+    
+    # --- 2. LAYOUT & FILTERS ---
+    
     col_filter, col_content = st.columns([1, 3])
     
     with col_filter:
         st.subheader("Filter Settings")
-        st.caption("Refine the RFM analysis by selecting specific join cohorts.")
         
-        # Allow specific cohort selection based on current global filter
-        available = rfm_scored.sort_values('sort_key')['joined_month'].unique()
-        # Which ones are currently "active" in the main filter?
-        preselected = [c for c in available if pd.to_datetime(c).strftime('%Y-%m') in [d.strftime('%Y-%m') for d in current_selection]]
+        # A. Cohort Filter (Already handled by global, but we show it or allow subset)
+        # B. RFM Group Filter
+        all_groups = sorted(rfm_now['RFM_Group'].unique()) if not rfm_now.empty else []
+        selected_groups = st.multiselect("Filter RFM Groups:", options=all_groups, default=[])
         
-        selected_heatmap_cohorts = st.multiselect("Select Cohorts:", 
-                                                  options=available, 
-                                                  default=preselected)
+        # C. Cohort Subset (for Heatmap specifically)
+        available_cohorts = rfm_now.sort_values('sort_key')['joined_month'].unique()
+        preselected = [c for c in available_cohorts if pd.to_datetime(c).strftime('%Y-%m') in [d.strftime('%Y-%m') for d in current_selection]]
+        
+        # Note: If no RFM group selected, assume ALL
+        mask_now = pd.Series(True, index=rfm_now.index)
+        mask_prev = pd.Series(True, index=rfm_prev.index)
+        
+        if selected_groups:
+            mask_now = mask_now & rfm_now['RFM_Group'].isin(selected_groups)
+            mask_prev = mask_prev & rfm_prev['RFM_Group'].isin(selected_groups)
+            
+        filtered_now = rfm_now[mask_now]
+        filtered_prev = rfm_prev[mask_prev]
 
+    # --- 3. TOP SUMMARY (MoM Flow) ---
     with col_content:
-        # --- RFM HEATMAP ---
-        st.subheader("RFM Group Heatmap: Frequency vs Recency")
+        st.markdown("### User Flow Summary (MoM Change)")
         
-        if not selected_heatmap_cohorts:
-            st.warning("No cohorts selected for heatmap.")
-        else:
-            # Aggregation for Heatmap
-            heatmap_data = rfm_scored[rfm_scored['joined_month'].isin(selected_heatmap_cohorts)].groupby(['F', 'R'])['m_raw'].mean().reset_index()
-            heatmap_pivot = heatmap_data.pivot(index='F', columns='R', values='m_raw')
+        # Counts
+        count_now = filtered_now['user_id'].nunique()
+        count_prev = filtered_prev['user_id'].nunique()
+        diff = count_now - count_prev
+        
+        c1, c_arr, c2 = st.columns([2,1,2])
+        
+        with c1:
+            st.metric(label=f"Users ({prev_date.strftime('%b %d')})", value=count_prev)
             
-            fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='.0f', color_continuous_scale='Viridis',
-                                     labels=dict(x="Recency Score (3=Recent)", y="Frequency Score (3=Frequent)", color="Avg Revenue €"),
-                                     template=chart_template)
-            st.plotly_chart(fig_rfm_heat, use_container_width=True)
+        with c_arr:
+             st.markdown(f"<h2 style='text-align: center; color: {'green' if diff >= 0 else 'red'};'>{'➜' if diff == 0 else ('↗' if diff > 0 else '↘')}</h2>", unsafe_allow_html=True)
+        
+        with c2:
+            st.metric(label=f"Users ({now_date.strftime('%b %d')})", value=count_now, delta=int(diff))
+            
+        st.markdown("---")
 
-        # --- GROUP COMPARISON ---
-        st.subheader("Comparison of Top RFM Combinations")
+        # --- 4. DATA PREP FOR HEATMAP (DELTA) ---
+        # We need counts per (F, R) bucket for Now and Prev, then subtract
         
-        if selected_heatmap_cohorts:
-            comp_df = rfm_scored[rfm_scored['joined_month'].isin(selected_heatmap_cohorts)]
-            group_stats = comp_df.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
-            
-            # Sorting
+        # Full aggregation (independent of RFM Group filter for the heatmap grid? 
+        # User said: "IN RFM Group Heatmap möchte ich im allgemeinen die Veränderung sehen... Die Heatmap zeigt den aktuellen Monat und soll mit + oder - Werten Zeigen"
+        # Usually Heatmap shows the whole landscape. If I filter to "1-1-1", the heatmap would only show one cell.
+        # User requirement: "Filter applicable to... Comparison of RFM combination should reflect selected groups". 
+        # It seems the Heatmap should probably show the *General* change to provide context, or be filtered?
+        # "Filter which group I want to select... User flow summary should show... In RFM Group Heatmap I want to see the change IN GENERAL"
+        # -> inferred: Heatmap shows ALL groups (Unfiltered by RFM Group), but Filter applies to Summary & Bar Chart.
+        
+        # However, clarity: "RFM Group Heatmap möchte ich im allgemeinen die Veränderung sehen" -> "In General".
+        # So I will use the Full Data (filtered by Cohort, but NOT by RFM Group selector) for Heatmap.
+        
+        hm_now = rfm_now.groupby(['F', 'R']).size().reset_index(name='count')
+        hm_prev = rfm_prev.groupby(['F', 'R']).size().reset_index(name='count')
+        
+        hm_merged = pd.merge(hm_now, hm_prev, on=['F', 'R'], how='outer', suffixes=('_now', '_prev')).fillna(0)
+        hm_merged['delta'] = hm_merged['count_now'] - hm_merged['count_prev']
+        
+        # Pivot for Heatmap
+        # Axes: Y = Recency (3-2-1), X = Frequency (1-2-3)
+        heatmap_pivot = hm_merged.pivot(index='R', columns='F', values='delta').fillna(0)
+        
+        # Sorting Index (Rows: R) -> 3, 2, 1 (Top to Bottom)
+        # Sorting Cols (Cols: F) -> 1, 2, 3 (Left to Right)
+        heatmap_pivot = heatmap_pivot.reindex(index=["3", "2", "1"], columns=["1", "2", "3"])
+        
+        st.subheader("RFM Delta Heatmap (MoM Change in User Count)")
+        fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='+d', color_continuous_scale='RdBu', color_continuous_midpoint=0,
+                                 labels=dict(x="Frequency (1=Low, 3=High)", y="Recency (3=Recent, 1=Old)", color="Change"),
+                                 template=chart_template)
+        st.plotly_chart(fig_rfm_heat, use_container_width=True)
+
+        # --- 5. GROUP COMPARISON (BAR CHART) ---
+        st.subheader("Comparison of Selected RFM Groups")
+        
+        # This IS affected by the filter
+        if filtered_now.empty:
+            st.info("No users in selected groups.")
+        else:
+            group_stats = filtered_now.groupby(['joined_month', 'RFM_Group']).size().reset_index(name='count')
             group_stats = group_stats.sort_values(by="count", ascending=False)
             
             fig_groups = px.bar(group_stats, x="RFM_Group", y="count", color="joined_month", barmode="group",
-                                template=chart_template)
+                                template=chart_template, title=f"Composition of Selected Groups ({now_date.strftime('%Y-%m-%d')})")
             st.plotly_chart(fig_groups, use_container_width=True)
 
 # --- 5. FOOTER AREA ---
 st.markdown("---")
-st.caption("Growth Intelligence Dashboard | © 2026 Volker Schulz | RFM 1-3 Model & Retention Heatmap")
+st.caption("Growth Intelligence Dashboard | © 2026 Volker Schulz | RFM MoM Analysis")
