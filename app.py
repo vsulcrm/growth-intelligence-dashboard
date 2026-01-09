@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # --- 1. SETUP & THEME ---
-st.set_page_config(page_title="Growth Intelligence Dashboard", layout="wide")
+st.set_page_config(page_title="Growth Intelligence", layout="wide")
 
 st.sidebar.title("App Settings")
 chart_template = "plotly_dark"
@@ -49,10 +49,7 @@ df_users['cohort'] = df_users['acq_date'].dt.to_period('M').dt.to_timestamp()
 all_months = sorted(df_users['cohort'].unique())
 
 # --- 3. HEADER AREA (Logic & Sidebar) ---
-st.title("Growth Intelligence Dashboard")
-
-# DEBUG: Trace Execution
-st.write("DEBUG: App Started")
+st.title("🚀 Product Growth Intelligence")
 
 # View Selector
 view_mode = st.radio("Select Analysis Focus:", ["📉 Retention Matrix", "👤 RFM Score Model", "💰 LTV Prediction"], horizontal=True)
@@ -164,7 +161,6 @@ if view_mode == "📉 Retention Matrix":
 
 # --- TAB: LTV PREDICTION ---
 elif view_mode == "💰 LTV Prediction":
-    # st.write("DEBUG: LTV Tab Selected")
     st.header("LTV Prediction (Linear Projection)")
     st.caption("Projected Lifetime Value based on cumulative revenue per cohort.")
     
@@ -256,7 +252,7 @@ elif view_mode == "💰 LTV Prediction":
             if model['m'] is not None:
                 m = model['m']
                 c = model['c']
-                formula_str = f"LTV = {m:.2f} * Month + {c:.2f}"
+                formula_str = f"ARPU = {m:.2f} * Month + {c:.2f}"
             else:
                 m = avg_slope
                 if model['x_known']:
@@ -265,7 +261,7 @@ elif view_mode == "💰 LTV Prediction":
                     c = last_y - (m * last_x)
                 else:
                     c = 0 
-                formula_str = f"LTV = {m:.2f} * Month + {c:.2f} (Avg Slope Fallback)" 
+                formula_str = f"ARPU = {m:.2f} * Month + {c:.2f} (Avg Slope Fallback)" 
             
             # Generate row for 0 to 12
             row_dict = {'Cohort': cohort}
@@ -275,34 +271,23 @@ elif view_mode == "💰 LTV Prediction":
                 # Is this Past (Actual) or Future (Predicted)?
                 check_date = c_date + pd.DateOffset(months=m_idx)
                 
-                val = None
-                
-                # Check for Actual Value first
                 if check_date <= sim_now:
-                    # Try to fetch from Dataframe
+                    # Use Actual if available
+                    # ARPU DF has actuals
                     if m_idx in arpu_df.columns:
-                        try:
-                            raw_val = arpu_df.at[cohort, m_idx]
-                            # Check strictly for NaN (pandas nullable usually)
-                            if pd.notna(raw_val):
-                                val = float(raw_val)
-                        except:
-                            pass
-                
-                # If no actual value (future OR missing actual), use Model
-                if val is None:
+                        val = arpu_df.at[cohort, m_idx]
+                    else:
+                        val = m * m_idx + c
+                else:
+                    # Predicted
                     val = m * m_idx + c
                 
-                # Final Safety Check
-                if pd.isna(val):
-                    val = 0.0
-                
                 # Ensure non-negative
-                val = max(0.0, float(val))
+                val = max(0, val)
                 row_dict[m_idx] = val
             
             # Add Formula Column
-            row_dict['LTV Model (Cumulative)'] = f"{formula_str}"
+            row_dict['Formula'] = f"{formula_str}"
             
             ltv_matrix_data.append(row_dict)
             
@@ -311,24 +296,26 @@ elif view_mode == "💰 LTV Prediction":
         ordered_ltv_labels = sorted(ltv_df.index, key=lambda x: datetime.strptime(x, '%b %Y'))
         ltv_df = ltv_df.reindex(ordered_ltv_labels)
         
-        # Display as Table (Simple)
-        st.subheader("LTV Matrix (Actuals vs Predictions)")
-        # st.write("DEBUG: Matrix Calculated, formatting...")
-        st.caption("Actuals are standard text. Predictions are **blue** (Styling temporarily disabled).")
-
-        # Basic Format
-        numeric_cols = [c for c in ltv_df.columns if isinstance(c, int)]
-        format_dict = {c: "€{:.2f}" for c in numeric_cols}
-
-        # Use Standard Dataframe (No Styler) ensures compatibility
-        # We apply formatting to the data itself or use st.column_config if needed, 
-        # but to be safe we just format the values in a copy for display.
+        # Display as Table (with Formatting)
+        # Using Styler for Gradient on 0-12 columns only
+        st.subheader("LTV Matrix (Actuals + Predictions)")
         
-        display_df = ltv_df.copy()
+        # Format Formula column separately?
+        # Streamlit dataframe styling is a bit limited for mixed types (Strings + Floats).
+        # We can just show the raw dataframe with formatting for numbers.
+        
+        # Format numeric columns as currency strings for display? 
+        # Then gradient won't work in standard dataframe easily unless we use pandas Styler.
+        
+        numeric_cols = [c for c in ltv_df.columns if c != 'Formula']
+        
+        # Create display DF
+        disp_df = ltv_df.copy()
         for c in numeric_cols:
-             display_df[c] = display_df[c].apply(lambda x: f"€{x:.2f}")
-
-        st.dataframe(display_df, use_container_width=True)
+             disp_df[c] = disp_df[c].apply(lambda x: f"€{x:.2f}")
+             
+        # Use simple dataframe for now as requested "Tabelle"
+        st.dataframe(disp_df, use_container_width=True)
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
@@ -358,13 +345,13 @@ else:
     # --- 1. LOGIC: SNAPSHOT CALCULATION ---
     # function to calculate RFM table at a specific reference date
     def get_rfm_at_date(ref_date):
-        # User Request: "Month Selection should be used for total users not the app setings"
-        # We switch to using the FULL datasets (df_users, df_events) instead of filtered versions.
-        # This ignores the Sidebar Cohort Filter and Sidebar Date Slider.
+        # Filter events up to ref_date
+        # We also need to respect the "Cohort Filter" (filtered_users is already filtered by cohort)
         
+        # We need a fresh query for the specific date cutoff
+        # ref_date needs to be string for SQL
         ref_date_str = ref_date.strftime('%Y-%m-%d %H:%M:%S')
         
-        # We join df_users (All) with df_events (All, filtered by date <= ref_date)
         q = f"""
             SELECT 
                 u.user_id, 
@@ -373,8 +360,8 @@ else:
                 date_diff('day', MAX(CASE WHEN e.type = 'visit' THEN e.event_date END), timestamp '{ref_date_str}') as r_raw,
                 COUNT(CASE WHEN e.type = 'visit' THEN 1 END) as f_raw,
                 COALESCE(SUM(e.revenue), 0) as m_raw
-            FROM df_users u 
-            LEFT JOIN df_events e ON u.user_id = e.user_id AND e.event_date <= '{ref_date_str}'
+            FROM filtered_users u 
+            LEFT JOIN df_filtered_events e ON u.user_id = e.user_id AND e.event_date <= '{ref_date_str}'
             GROUP BY 1, 2, 3
         """
         df = duckdb.query(q).df()
