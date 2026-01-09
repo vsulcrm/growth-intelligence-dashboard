@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="Growth Intelligence Dashboard", layout="wide")
 
 st.sidebar.title("App Settings")
-chart_template = "plotly_dark"
+dark_mode = st.sidebar.toggle("Dark Mode", value=True)
+chart_template = "plotly_dark" if dark_mode else "plotly"
 
 # --- 2. DATA ENGINE (Realistic Simulation) ---
 @st.cache_data
