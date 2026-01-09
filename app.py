@@ -54,7 +54,7 @@ st.title("🚀 Product Growth Intelligence")
 # View Selector
 view_mode = st.radio("Select Analysis Focus:", ["📉 Retention Matrix", "👤 RFM Score Model"], horizontal=True)
 
-st.sidebar.subheader("Cohort Filter")
+st.sidebar.subheader("Filter: User Cohorts (Join Date)")
 
 # Session State for Checkboxes
 if 'selected_months' not in st.session_state:
@@ -222,7 +222,7 @@ else:
         # Reference Month Selector
         # Default to 2nd to last (Nov 2025) so Dec 2025 is next, or similar.
         default_idx = len(available_months_str) - 2 if len(available_months_str) > 1 else 0
-        selected_month_str = st.selectbox("Select Reference Month (Base):", options=available_months_str, index=default_idx)
+        selected_month_str = st.selectbox("Select Analysis Month (Timeframe):", options=available_months_str, index=default_idx)
         
         # Calculate Dates
         base_date = datetime.strptime(selected_month_str, '%b %Y')
@@ -284,7 +284,7 @@ else:
 
     # --- 3. TOP SUMMARY (MoM Flow) ---
     with col_content:
-        st.markdown("### User Flow Summary (MoM Change)")
+        st.markdown("### Month-Over-Month Flow")
         
         # Counts
         count_left = filtered_left['user_id'].nunique()
