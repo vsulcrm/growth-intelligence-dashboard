@@ -195,7 +195,6 @@ else:
     st.header("RFM Score Model (Comparative View)")
     
     # 1. Calculate RFM Scores Global
-    # 1. Calculate RFM Scores Global
     # Changed: r_raw is now in hours, f_visits, m_revenue
     rfm_query = """
         SELECT 
