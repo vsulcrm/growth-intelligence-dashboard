@@ -211,14 +211,10 @@ elif view_mode == "💰 LTV Prediction":
         # Projection Logic (Simple Linear Regression per cohort)
         # Using numpy polyfit
         
-        plot_data = [] # List of dicts for Plotly
-        formula_data = [] # List of dicts for Table
-        
         sim_now = datetime(2026, 1, 8, 12, 0)
         
         # 1. First Pass: Calculate Slopes for cohorts with enough data
         slopes = []
-        
         cohort_models = {}
         
         for cohort in arpu_df.index:
@@ -244,53 +240,71 @@ elif view_mode == "💰 LTV Prediction":
         # Avg Slope Fallback
         avg_slope = np.mean(slopes) if slopes else 0
         
-        # 2. Second Pass: Generate Projections and Formulas
+        # 2. Build LTV Matrix (Cohorts x Month 0-12)
+        # Rows: All Cohorts
+        # Cols: 0 to 12
+        ltv_matrix_data = [] # List of dicts
+        
         for cohort in arpu_df.index:
             model = cohort_models[cohort]
-            x_known = model['x_known']
-            y_known = model['y_known']
-            
-            # Plot Actuals
-            for i, x in enumerate(x_known):
-                plot_data.append({'Cohort': cohort, 'Month': x, 'ARPU': y_known[i], 'Type': 'Actual'})
             
             # Determine Coefs to use
             if model['m'] is not None:
                 m = model['m']
                 c = model['c']
-                formula_str = f"ARPU = {m:.2f} * Month + {c:.2f}"
             else:
-                # Fallback
                 m = avg_slope
-                # Calculate 'c' such that the line passes through the LAST known point
-                # y = mx + c -> c = y - mx
-                if x_known:
-                    last_x = x_known[-1]
-                    last_y = y_known[-1]
+                if model['x_known']:
+                    last_x = model['x_known'][-1]
+                    last_y = model['y_known'][-1]
                     c = last_y - (m * last_x)
                 else:
-                    c = 0 # No data at all?
-                formula_str = f"ARPU = {m:.2f} * Month + {c:.2f} (Avg Slope Fallback)"
+                    c = 0 
             
-            # User Request: "LTV prediction should be a table that shows values 12 months after Launch"
-            # We calculate value at x=12
-            val_12 = m*12 + c
-            formula_data.append({'Cohort': cohort, 'Projected LTV (Month 12)': f"€{val_12:.2f}", 'Formula': formula_str})
-
-            # Project forward
-            start_proj = x_known[-1] + 1 if x_known else 0
-            for m_proj in range(start_proj, 13):
-                pred_val = m * m_proj + c
-                plot_data.append({'Cohort': cohort, 'Month': m_proj, 'ARPU': pred_val, 'Type': 'Projected'})
+            # Generate row for 0 to 12
+            row_dict = {'Cohort': cohort}
+            c_date = datetime.strptime(cohort, '%b %Y')
+            
+            for m_idx in range(13):
+                # Is this Past (Actual) or Future (Predicted)?
+                check_date = c_date + pd.DateOffset(months=m_idx)
                 
-        df_plot = pd.DataFrame(plot_data)
+                if check_date <= sim_now:
+                    # Use Actual if available
+                    # ARPU DF has actuals
+                    if m_idx in arpu_df.columns:
+                        val = arpu_df.at[cohort, m_idx]
+                    else:
+                        # Fallback to model if missing intermediate actual? 
+                        # Or just use model. Usually actuals are strictly sequential.
+                        val = m * m_idx + c
+                else:
+                    # Predicted
+                    val = m * m_idx + c
+                
+                # Ensure non-negative
+                val = max(0, val)
+                row_dict[m_idx] = val
+            
+            ltv_matrix_data.append(row_dict)
+            
+        ltv_df = pd.DataFrame(ltv_matrix_data).set_index("Cohort")
+        # Ensure standard sort order
+        ordered_ltv_labels = sorted(ltv_df.index, key=lambda x: datetime.strptime(x, '%b %Y'))
+        ltv_df = ltv_df.reindex(ordered_ltv_labels)
         
-        fig_ltv = px.line(df_plot, x="Month", y="ARPU", color="Cohort", line_dash="Type", 
-                          title="LTV Progression (Actual vs Cumulative Projected)", template=chart_template)
-        st.plotly_chart(fig_ltv, use_container_width=True)
+        # Heatmap Visualization
+        # We want to format the text as Currency
+        ltv_text = ltv_df.applymap(lambda x: f"€{x:.2f}")
         
-        st.subheader("Predicted LTV (12 Months Post-Acquisition)")
-        st.dataframe(pd.DataFrame(formula_data).set_index("Cohort"))
+        fig_ltv_heat = px.imshow(ltv_df, text_auto=False, color_continuous_scale='Greens',
+                                 labels=dict(x="Months Since Acquisition", y="Cohort", color="LTV (€)"),
+                                 aspect="auto", template=chart_template)
+        
+        # Apply custom text layer
+        fig_ltv_heat.update_traces(text=ltv_text, texttemplate="%{text}")
+        
+        st.plotly_chart(fig_ltv_heat, use_container_width=True)
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
@@ -422,6 +436,12 @@ else:
     # Recalculate RFM based on dynamic dates
     rfm_left_raw = get_rfm_at_date(date_left)
     rfm_right_raw = get_rfm_at_date(date_right)
+    
+    # --- STRICT MOM FLOW LOGIC ---
+    # User Request: "I want to see the 100 users from the first month in the second month"
+    # Filter rfm_right_raw to ONLY include users present in rfm_left_raw
+    valid_users = rfm_left_raw['user_id'].unique()
+    rfm_right_raw = rfm_right_raw[rfm_right_raw['user_id'].isin(valid_users)]
     
     rfm_left = calculate_rfm_scores(rfm_left_raw)
     rfm_right = calculate_rfm_scores(rfm_right_raw)
