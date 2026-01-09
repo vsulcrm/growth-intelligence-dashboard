@@ -297,25 +297,42 @@ elif view_mode == "💰 LTV Prediction":
         ltv_df = ltv_df.reindex(ordered_ltv_labels)
         
         # Display as Table (with Formatting)
-        # Using Styler for Gradient on 0-12 columns only
-        st.subheader("LTV Matrix (Actuals + Predictions)")
+        # Using Styler to color code Actual vs Predicted
+        st.subheader("LTV Matrix (Actuals vs Predictions)")
+        st.caption("Actuals are standard text. Predictions are **blue**.")
         
-        # Format Formula column separately?
-        # Streamlit dataframe styling is a bit limited for mixed types (Strings + Floats).
-        # We can just show the raw dataframe with formatting for numbers.
+        def style_actual_vs_predicted(df):
+            # Returns a DataFrame of CSS strings
+            styles = pd.DataFrame('', index=df.index, columns=df.columns)
+            
+            # Re-use sim_now from scope or define
+            sim_now_limit = datetime(2026, 1, 8, 12, 0)
+            
+            for cohort in df.index:
+                try:
+                    c_date = datetime.strptime(cohort, '%b %Y')
+                except:
+                    continue
+                    
+                for col in df.columns:
+                    if isinstance(col, int): # 0..12
+                        check_date = c_date + pd.DateOffset(months=col)
+                        if check_date > sim_now_limit:
+                            # Predicted
+                            styles.at[cohort, col] = 'color: #4682B4; font-style: italic;' # SteelBlue
+                        else:
+                            # Actual
+                            styles.at[cohort, col] = 'color: inherit;' 
+            return styles
+
+        numeric_cols = [c for c in ltv_df.columns if isinstance(c, int)]
+        format_dict = {c: "€{:.2f}" for c in numeric_cols}
         
-        # Format numeric columns as currency strings for display? 
-        # Then gradient won't work in standard dataframe easily unless we use pandas Styler.
-        
-        numeric_cols = [c for c in ltv_df.columns if c != 'Formula']
-        
-        # Create display DF
-        disp_df = ltv_df.copy()
-        for c in numeric_cols:
-             disp_df[c] = disp_df[c].apply(lambda x: f"€{x:.2f}")
+        # Apply style
+        # Note: 'Formula' column is string, left unformatted
+        styler = ltv_df.style.apply(style_actual_vs_predicted, axis=None).format(format_dict)
              
-        # Use simple dataframe for now as requested "Tabelle"
-        st.dataframe(disp_df, use_container_width=True)
+        st.dataframe(styler, use_container_width=True)
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
