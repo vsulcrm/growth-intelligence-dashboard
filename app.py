@@ -277,16 +277,24 @@ elif view_mode == "💰 LTV Prediction":
                 if check_date <= sim_now:
                     # Try to fetch from Dataframe
                     if m_idx in arpu_df.columns:
-                        raw_val = arpu_df.at[cohort, m_idx]
-                        if pd.notna(raw_val):
-                            val = raw_val
+                        try:
+                            raw_val = arpu_df.at[cohort, m_idx]
+                            # Check strictly for NaN (pandas nullable usually)
+                            if pd.notna(raw_val):
+                                val = float(raw_val)
+                        except:
+                            pass
                 
                 # If no actual value (future OR missing actual), use Model
                 if val is None:
                     val = m * m_idx + c
                 
+                # Final Safety Check
+                if pd.isna(val):
+                    val = 0.0
+                
                 # Ensure non-negative
-                val = max(0, val)
+                val = max(0.0, float(val))
                 row_dict[m_idx] = val
             
             # Add Formula Column
@@ -308,7 +316,6 @@ elif view_mode == "💰 LTV Prediction":
             # Returns a DataFrame of CSS strings
             styles = pd.DataFrame('', index=df.index, columns=df.columns)
             
-            # Re-use sim_now from scope or define
             sim_now_limit = datetime(2026, 1, 8, 12, 0)
             
             for cohort in df.index:
@@ -325,8 +332,8 @@ elif view_mode == "💰 LTV Prediction":
                             # Predicted
                             styles.at[cohort, col] = 'color: #4682B4; font-style: italic;' # SteelBlue
                         else:
-                            # Actual
-                            styles.at[cohort, col] = 'color: inherit;' 
+                            # Actual - Use empty string instead of inherit to be safe
+                            styles.at[cohort, col] = '' 
             return styles
 
         # Ensure we identify numeric columns correctly (they are Ints in the DataFrame)
@@ -334,11 +341,12 @@ elif view_mode == "💰 LTV Prediction":
         format_dict = {c: "€{:.2f}" for c in numeric_cols}
         
         # Apply style
-        # Note: 'Formula' column is string, left unformatted
-        styler = ltv_df.style.apply(style_actual_vs_predicted, axis=None).format(format_dict)
-             
-        # Use st.dataframe with Column Config to ensure 0-12 are treated as columns not index
-        st.dataframe(styler, use_container_width=True)
+        try:
+            styler = ltv_df.style.apply(style_actual_vs_predicted, axis=None).format(format_dict)
+            st.dataframe(styler, use_container_width=True)
+        except Exception as e:
+            st.error(f"Styling Error: {e}")
+            st.dataframe(ltv_df, use_container_width=True)
 
 # --- TAB: RFM SCORE MODEL ---
 else: 
