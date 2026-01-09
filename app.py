@@ -176,10 +176,10 @@ elif view_mode == "💰 LTV Prediction":
             WHERE e.type = 'purchase'
         )
         SELECT strftime(c_month, '%b %Y') as cohort,
-               uc.c_month,
+               c_month,
                m_num, 
                SUM(revenue) as total_rev
-        FROM rev JOIN uc ON rev.user_id = uc.user_id -- redundant join but safe
+        FROM rev
         WHERE m_num BETWEEN 0 AND 24 
         GROUP BY 1, 2, 3
     """
@@ -405,13 +405,14 @@ else:
         
         selected_group = st.selectbox("Filter RFM Group:", options=all_groups, index=0)
         
-        # C. Cohort Subset (for Heatmap specifically)
+        # C. Cohort Subset (local filter)
         available_cohorts = rfm_right.sort_values('sort_key')['joined_month'].unique()
-        preselected = [c for c in available_cohorts if pd.to_datetime(c).strftime('%Y-%m') in [d.strftime('%Y-%m') for d in current_selection]]
+        # Default: All available in the gathered data (which is already subset by sidebar)
+        selected_cohorts = st.multiselect("Filter Specific Cohorts:", options=available_cohorts, default=available_cohorts)
         
         # Filter Logic
-        mask_left = pd.Series(True, index=rfm_left.index)
-        mask_right = pd.Series(True, index=rfm_right.index)
+        mask_left = rfm_left['joined_month'].isin(selected_cohorts)
+        mask_right = rfm_right['joined_month'].isin(selected_cohorts)
         
         if selected_group != "All":
             mask_left = mask_left & (rfm_left['RFM_Group'] == selected_group)
