@@ -484,38 +484,27 @@ else:
     # --- 4. DATA PREP FOR HEATMAP (DELTA) ---
     st.subheader(f"RFM Delta Heatmap ({label_left} ➜ {label_right})")
     
-    c_heat, c_heat_filt = st.columns([3, 1])
+    # Heatmap shows GENERAL change (All Groups) for the selected Global Cohorts
+    # User requested to remove the "Heatmap Filter" and use the data from above.
     
-    with c_heat_filt:
-        st.subheader("Heatmap Filter")
-        available_cohorts = rfm_right.sort_values('sort_key')['joined_month'].unique()
-        selected_cohorts = st.multiselect("Specific Cohorts:", options=available_cohorts, default=available_cohorts)
-        
-    with c_heat:
-        # Heatmap Filter Logic (Cohort Only, ignore RFM Group filter for general view?)
-        # User said "In general". But if we filtering, maybe we should respect it? 
-        # "Heatmap shows current month... with + or - values... in General".
-        # Assume Heatmap is "General Overview" thus ONLY Cohort Filter applies.
-        
-        m_left_c = rfm_left['joined_month'].isin(selected_cohorts)
-        m_right_c = rfm_right['joined_month'].isin(selected_cohorts)
-        
-        hm_left = rfm_left[m_left_c].groupby(['F', 'R']).size().reset_index(name='count')
-        hm_right = rfm_right[m_right_c].groupby(['F', 'R']).size().reset_index(name='count')
-        
-        hm_merged = pd.merge(hm_left, hm_right, on=['F', 'R'], how='outer', suffixes=('_left', '_right')).fillna(0)
-        hm_merged['delta'] = hm_merged['count_right'] - hm_merged['count_left']
-        
-        # Pivot for Heatmap
-        heatmap_pivot = hm_merged.pivot(index='R', columns='F', values='delta').fillna(0)
-        
-        # Sorting
-        heatmap_pivot = heatmap_pivot.reindex(index=["3", "2", "1"], columns=["1", "2", "3"])
-        
-        fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='+d', color_continuous_scale='RdBu', color_continuous_midpoint=0,
-                                 labels=dict(x="Frequency (1=Low, 3=High)", y="Recency (3=Recent, 1=Old)", color="Change"),
-                                 template=chart_template)
-        st.plotly_chart(fig_rfm_heat, use_container_width=True)
+    # Calculate counts on the global set (rfm_left/rfm_right from Sidebar selection)
+    hm_left = rfm_left.groupby(['F', 'R']).size().reset_index(name='count')
+    hm_right = rfm_right.groupby(['F', 'R']).size().reset_index(name='count')
+    
+    hm_merged = pd.merge(hm_left, hm_right, on=['F', 'R'], how='outer', suffixes=('_left', '_right')).fillna(0)
+    hm_merged['delta'] = hm_merged['count_right'] - hm_merged['count_left']
+    
+    # Pivot for Heatmap
+    heatmap_pivot = hm_merged.pivot(index='R', columns='F', values='delta').fillna(0)
+    
+    # Sorting
+    # Ensure all bins (0, 1, 2, 3) are present in columns
+    heatmap_pivot = heatmap_pivot.reindex(index=["3", "2", "1"], columns=["0", "1", "2", "3"]).fillna(0)
+    
+    fig_rfm_heat = px.imshow(heatmap_pivot, text_auto='+d', color_continuous_scale='RdBu', color_continuous_midpoint=0,
+                             labels=dict(x="Frequency (0=Zero, 1=Low, 3=High)", y="Recency (3=Recent, 1=Old)", color="Change"),
+                             template=chart_template)
+    st.plotly_chart(fig_rfm_heat, use_container_width=True)
 
     # --- 5. GROUP COMPARISON (BAR CHART) ---
     st.subheader("Comparison of Selected RFM Groups")
